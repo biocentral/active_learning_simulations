@@ -3,16 +3,22 @@ from biotrainer_core.input_files import read_FASTA
 from pydantic import BaseModel, Field
 from biocentral_api import ActiveLearningModelType, CommonEmbedder
 
-from al_paths import RESULTS_DIR, PROJECTIONS_DIR
-from al_compress_reports import compress_reports
-from al_simulation_container import ALSimulatorDataset
-from al_splits import ALSimulatorSplit
-from al_simulator import (CAMPAIGN_SETTINGS, ActiveLearningMultipleSimulationResult,
-                          biocentral_api, get_simulator)
+from bioengineer_active_learning_simulations.compress_reports import compress_reports
+from bioengineer_active_learning_simulations.datasets import ALSimulatorDataset
+from bioengineer_active_learning_simulations.paths import PROJECTIONS_DIR, RESULTS_DIR
+from bioengineer_active_learning_simulations.results import (
+    ActiveLearningMultipleSimulationResult,
+)
+from bioengineer_active_learning_simulations.settings import CAMPAIGN_SETTINGS
+from bioengineer_active_learning_simulations.simulators import (
+    biocentral_api,
+    get_simulator,
+)
+from bioengineer_active_learning_simulations.splits import ALSimulatorSplit
 
 
 class ExperimentConstants:
-    n_rounds: int = CAMPAIGN_SETTINGS.n_rounds
+    n_replicates: int = CAMPAIGN_SETTINGS.n_replicates
     result_dir: Path = RESULTS_DIR
     projection_dir: Path = PROJECTIONS_DIR
 
@@ -79,9 +85,11 @@ def _run_experiment(experiment_params: ExperimentParametersV1):
     else:
         al_simulator = get_simulator(experiment_params.dataset_id, split_id=experiment_params.split_id)
         print(f"Running simulation for {experiment_params}..")
-        sim_result = al_simulator.simulate(model_type=experiment_params.model_type,
-                                           embedder_name=experiment_params.embedder_name,
-                                           n_rounds=ExperimentConstants.n_rounds)
+        sim_result = al_simulator.simulate(
+            model_type=experiment_params.model_type,
+            embedder_name=experiment_params.embedder_name,
+            n_replicates=ExperimentConstants.n_replicates,
+        )
         sim_result.save(save_dir)
     sim_result.print_stats()
 
