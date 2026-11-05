@@ -51,6 +51,15 @@ from pydantic import BaseModel, Field, model_validator
 from biotrainer_core.data_classes import SequenceData
 
 
+DEFAULT_SEED = 43
+"""Default seed, deliberately not biotrainer's 42 so an explicit seed stays recognisable.
+
+A constant rather than a derived value: CampaignSettings.fingerprint() hashes the seed
+into result file names, so anything date-derived would silently invalidate every
+resumable result once a day.
+"""
+
+
 class ExtrapolationAxis(str, Enum):
     """The generalization question a split poses. See the table in the module docstring."""
 
@@ -229,6 +238,15 @@ def substitutions(sequence: str, reference: str) -> FrozenSet[str]:
         for index, (expected, actual) in enumerate(zip(reference, sequence))
         if expected != actual
     )
+
+
+def design_space(pool: Sequence[SequenceData], reference: str) -> list[str]:
+    """Every substitution in the pool compared to `reference`, sorted by position.
+    """
+    observed = set()
+    for data_point in pool:
+        observed |= substitutions(data_point.seq, reference)
+    return sorted(observed, key=lambda s: (position_of(s), s))
 
 
 def position_of(substitution: str) -> int:
@@ -466,7 +484,7 @@ class RandomSample(SequenceSelector):
     kind: Literal["random_sample"] = "random_sample"
     n: Optional[int] = Field(default=None, ge=1)
     fraction: Optional[float] = Field(default=None, gt=0.0, le=1.0)
-    seed: int = 42
+    seed: int = Field(default=DEFAULT_SEED)
 
     @model_validator(mode="after")
     def _check_size(self) -> RandomSample:
@@ -636,7 +654,9 @@ class PositionSplit(SplitStrategy):
         lt=1.0,
         description="Share of mutated positions to hold out",
     )
-    seed: int = Field(default=42, description="Seed for choosing held-out positions")
+    seed: int = Field(
+        default=DEFAULT_SEED, description="Seed for choosing held-out positions"
+    )
 
     @model_validator(mode="after")
     def _check_choice(self) -> PositionSplit:
@@ -712,7 +732,8 @@ class MutationSplit(SplitStrategy):
         description="Share of distinct substitutions to hold out",
     )
     seed: int = Field(
-        default=42, description="Seed for choosing held-out substitutions"
+        default=DEFAULT_SEED,
+        description="Seed for choosing held-out substitutions",
     )
 
     @model_validator(mode="after")
@@ -909,7 +930,7 @@ class PoolSubsample(BaseModel):
 
     n: Optional[int] = Field(default=None, ge=2)
     fraction: Optional[float] = Field(default=None, gt=0.0, le=1.0)
-    seed: int = 42
+    seed: int = Field(default=DEFAULT_SEED)
 
     @model_validator(mode="after")
     def _check_size(self) -> PoolSubsample:
@@ -954,7 +975,7 @@ class ALSimulatorSplitDefinition(BaseModel):
         description="Cap the starting set, moving the surplus into the withheld half",
     )
     train_sample_seed: int = Field(
-        default=42, description="Seed for capping the starting set"
+        default=DEFAULT_SEED, description="Seed for capping the starting set"
     )
 
     def is_identity(self) -> bool:
