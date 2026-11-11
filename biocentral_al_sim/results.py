@@ -440,25 +440,26 @@ class ActiveLearningMultipleSimulationResult:
         }
 
     def save(self, path: Path):
-        """Save simulation results to JSON file"""
-        with open(path, 'w') as f:
-            json_results = []
-            for result in self.simulation_results:
-                # Parse the result into dict structure
-                result_dict = json.loads(result.model_dump_json())
+        """Save simulation results to JSON file, atomically so an interrupted save leaves no file"""
+        json_results = []
+        for result in self.simulation_results:
+            # Parse the result into dict structure
+            result_dict = json.loads(result.model_dump_json())
 
-                # Remove simulation_data from al_simulation_config to reduce file size
-                if 'al_simulation_config' in result_dict and 'simulation_data' in result_dict['al_simulation_config']:
-                    result_dict['al_simulation_config']['simulation_data'] = [
-                        SequenceData(seq_id="Dummy1", seq="MDUMMY").model_dump(),
-                        SequenceData(seq_id="Dummy2", seq="ADUMMY").model_dump(),
-                        SequenceData(seq_id="Dummy3", seq="GDUMMY").model_dump()
-                    ]
+            # Remove simulation_data from al_simulation_config to reduce file size
+            if 'al_simulation_config' in result_dict and 'simulation_data' in result_dict['al_simulation_config']:
+                result_dict['al_simulation_config']['simulation_data'] = [
+                    SequenceData(seq_id="Dummy1", seq="MDUMMY").model_dump(),
+                    SequenceData(seq_id="Dummy2", seq="ADUMMY").model_dump(),
+                    SequenceData(seq_id="Dummy3", seq="GDUMMY").model_dump()
+                ]
 
-                json_results.append(result_dict)
+            json_results.append(result_dict)
 
-            # Write the JSON with proper formatting
+        tmp_path = path.with_name(path.name + ".tmp")
+        with open(tmp_path, "w") as f:
             json.dump(json_results, f, indent=4)
+        tmp_path.replace(path)
 
 
 class ActiveLearningSimulationComparer:
