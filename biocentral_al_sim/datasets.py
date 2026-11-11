@@ -138,12 +138,9 @@ _DATASET_DEFINITIONS.update({
         fasta_path="datasets/engineering/flip2_TrpB_max2000.fasta",
         reference_fasta_path=f"{_FLIP2_RAW}/trpb/TrpB_wt.fasta",
         optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE),
-    # An ordinal activity ladder rather than a measurement: 0 non-functional, 1 active, 2 better than
-    # wild type, 3 better than the known A73R variant. DISCRETE on {2, 3} therefore means "beats the
-    # wild type" (19.3% of the pool); narrow it to ["3"] for a far harder screen (0.36%, 199 seqs).
+    # Ordinal ladder: 0 non-functional, 1 activity > 0, 2 activity > WT, 3 activity > A73R
     ALSimulatorDataset.FLIP2_NUCB.name: ALSimulatorDatasetDefinition(
         fasta_path="datasets/engineering/flip2_NucB_max2000.fasta",
         reference_fasta_path=f"{_FLIP2_RAW}/nucb/NucB_wt.fasta",
-        optimization_mode=ActiveLearningOptimizationMode.DISCRETE,
-        discrete_targets=["2", "3"]),
+        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE),
 })
