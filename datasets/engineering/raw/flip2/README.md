@@ -1,12 +1,10 @@
 # FLIP2 Data
 
 Protein fitness landscape splits from [FLIP2](https://flip.protein.properties) (Didi et al., ICML
-2026), the successor to the original FLIP benchmark. Two of its seven datasets are downloaded here:
+2026). Two of its seven datasets are downloaded here:
 **TrpB** (enzyme fitness, continuous) and **NucB** (nuclease activity, ordinal bins).
 
-Unlike [../combingym/](../combingym/), FLIP2 has no API: the splits are static files on GitHub
-Pages. The script still discovers them by parsing the landing page rather than hardcoding paths, so
-`--list` reports whatever FLIP2 currently publishes.
+Splits are static files on GitHub Pages.
 ## Downloading
 
 ```bash
@@ -34,17 +32,15 @@ uv run python download_flip2.py --datasets trpb --splits by_position
 
 ## CSV format
 
-Four columns, gzipped (`pandas.read_csv` handles `.gz` directly):
+Four columns, gzipped. Column order differs between the datasets.
 
 | Column | Meaning |
 | --- | --- |
-| `sequence` | full variant sequence (fixed length per dataset; substitutions only) |
-| `target` | measured fitness — continuous for TrpB, ordinal bin for NucB |
+| `sequence` | full variant sequence |
+| `target` | measured fitness (continuous for TrpB, ordinal bin for NucB) |
 | `set` | `train` or `test` |
 | `validation` | bool; a flagged subset *of* `train`, not a third disjoint set |
 
-**Column order differs between datasets** — NucB is `sequence,target,set,validation` while TrpB is
-`sequence,set,target,validation`. Read by name, never by position.
 
 Split sizes:
 
@@ -61,8 +57,7 @@ Split sizes:
 
 ### NucB target encoding
 
-`target` is an **ordinal scale**, not a raw measurement. Verified by joining on `sequence` against
-the upstream `landscape.csv`:
+`target` is an ordinal scale, not a raw measurement.
 
 | `target` | Upstream `activity_level` | Rows | Share |
 | --- | --- | --- | --- |
@@ -71,8 +66,7 @@ the upstream `landscape.csv`:
 | 2 | `activity_greater_than_WT` | 10 572 | 19.0 % |
 | 3 | `activity_greater_than_A73R` | 199 | 0.36 % |
 
-A73R is a known improved single variant, so bin 3 is "better than the best previously known
-variant" — 199 sequences out of 55 759.
+(A73R is a known improved single variant)
 
 ## Compiling
 
@@ -82,13 +76,10 @@ uv run datasets/dataset_preprocessor.py
 ```
 
 [compile_flip2.py](compile_flip2.py) writes `engineering/raw/flip2_<name>.fasta`; the shared
-preprocessor then writes `engineering/flip2_<name>_max2000.fasta`, which is what
-`ALSimulatorDataset.FLIP2_*` points at.
+preprocessor then writes `engineering/flip2_<name>_max2000.fasta`.
 
-**Splits are dropped.** The `set` and `validation` columns are discarded and every row kept. These
-simulations mask all labels and replay a campaign over the whole pool, so FLIP2's supervised boundary
-is not meaningful here — the equivalent notion lives in [splits.py](../../../../bioengineer_active_learning_simulations/splits.py) and is
-applied at simulation time. For TrpB that also means only one of the three split files is read, since
+**Splits are dropped.** The `set` and `validation` columns are discarded and every row kept.
+For TrpB that means only one of the three split files is read, since
 all three carry identical `sequence` and `target` columns row for row.
 
 ### Resulting FASTA Files
@@ -96,37 +87,24 @@ all three carry identical `sequence` and `target` columns row for row.
 | FASTA | Sequences | Length | Label |
 | --- | --- | --- | --- |
 | `flip2_TrpB_max2000.fasta` | 228 298 | 389 | continuous, −0.801 – 2.451 |
-| `flip2_NucB_max2000.fasta` | 55 759 | 142 | ordinal bins `0`–`3` |
+| `flip2_NucB_max2000.fasta` | 55 760 | 142 | ordinal bins `0`–`3` |
 
-The `_max2000` filter drops nothing. Verified after compiling: no non-standard residues, uniform
-length, unique ids, labels parse (NucB written as integers, not `2.0`).
+### Sequence Ids and the Parent Sequence
 
-### Sequence Ids And The Parent Sequence
-
-FLIP2 ships **no parent sequence** for either dataset, so both are reconstructed and written out, which
-is what makes the substitution-based split axes usable.
+FLIP2 contains no parent sequence for either dataset, so both are manually included.
 
 | Dataset | Parent | Ids | Why |
 | --- | --- | --- | --- |
 | `TrpB` | **Tm9D8∗**, written to `trpb/TrpB_wt.fasta` | substitutions, `TrpB_E105A:T106A:G107A` | ≤ 4 substitutions per variant, so ids reach only 28 characters |
-| `NucB` | wild-type NucB, written to `nucb/NucB_wt.fasta` | source row index, `NucB_00000` | up to 23 substitutions per variant, which would run to 120 characters |
-
-Having a parent is no longer what decides the id scheme — both datasets have one now — the id length is.
+| `NucB` | wild-type NucB, written to `nucb/NucB_wt.fasta` and added to the pool as `NucB_WT` | source row index, `NucB_00000` | up to 23 substitutions per variant, which would run to 120 characters |
 
 **TrpB's parent is Tm9D8∗**, an engineered *Thermotoga maritima* TrpB variant, **not** wild-type TmTrpB.
 Johnston et al. 2024: *"Tm9D8∗ differs from wildtype TmTrpB by ten amino acid substitutions (P19G, E30G,
-I69V, K96L, P140L, N167D, I184F, L213P, G228S, and T292S)."* It is reconstructed from UniProt
-[`P50909`](https://www.uniprot.org/uniprotkb/P50909) (`TRPB1_THEMA`, 389 aa) with those ten applied, and
-is byte-identical to the sequence the landscape itself implies. Two of the ten — `I184F` and `G228S` —
-fall inside the varied positions, so the library re-randomizes sites that had already been engineered.
-
-It could **not** have been recovered by per-position consensus: positions 183, 184, 227 and 228 form the
-4-site saturation library, so every residue is heavily represented there (~30 % modal share) while the
-sparse 3-site landscapes sit above 90 %. `consensus_sequence` refuses such a pool rather than returning an
-arbitrary sequence.
+I69V, K96L, P140L, N167D, I184F, L213P, G228S, and T292S)."
 
 **NucB's parent** comes from the [upstream record](https://storage.googleapis.com/nuclease_design/processed_data/landscape.csv)
-(`num_mutations == 0`), since it is genuinely absent from the distributed FLIP2 CSV.
+(`num_mutations == 0`).
+
 
 ## Citation and License
 
