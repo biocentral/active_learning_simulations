@@ -15,19 +15,20 @@ import pandas as pd
 import streamlit as st
 from biocentral_api import ProjectionResult
 from biocentral_vis import BiocentralChart
-from bioengineer_active_learning_simulations import plots as al_plots
-from bioengineer_active_learning_simulations.dashboard_models import (
+from biotrainer_core.data_classes import SequenceData
+from biotrainer_core.input_files import read_FASTA
+
+from biocentral_al_sim import plots as al_plots
+from biocentral_al_sim.dashboard_models import (
     DashboardCompressedData,
     DashboardExperimentData,
 )
-from bioengineer_active_learning_simulations.datasets import ALSimulatorDataset
-from bioengineer_active_learning_simulations.paths import PROJECTIONS_DIR, RESULTS_DIR
-from bioengineer_active_learning_simulations.simulators import (
+from biocentral_al_sim.datasets import ALSimulatorDataset
+from biocentral_al_sim.paths import PROJECTIONS_DIR, RESULTS_DIR
+from biocentral_al_sim.simulators import (
     ActiveLearningSimulator,
     get_simulator,
 )
-from biotrainer_core.data_classes import SequenceData
-from biotrainer_core.input_files import read_FASTA
 
 st.set_page_config(page_title="AL Simulation Dashboard", layout="wide")
 
