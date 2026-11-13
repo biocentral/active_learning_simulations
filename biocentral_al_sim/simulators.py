@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from functools import cache
-from typing import ClassVar, List, Optional
+from typing import ClassVar
 
 from biocentral_api import (
     ActiveLearningEngineeringCampaignConfig,
@@ -56,8 +56,8 @@ def get_simulator(
 def _apply_split(
     dataset_id: ALSimulatorDataset,
     split_id: ALSimulatorSplit,
-    simulation_data: List[SequenceData],
-) -> tuple[List[SequenceData], Optional[List[str]]]:
+    simulation_data: list[SequenceData],
+) -> tuple[list[SequenceData], list[str] | None]:
     """Resolve a split into (pool, start_ids).
 
     The split's *train* half becomes the campaign's starting set (``start_ids``); its *test* half
@@ -82,7 +82,7 @@ def _apply_split(
     return pool, assignment.train_ids
 
 
-TASK_TIMINGS: List[tuple] = []
+TASK_TIMINGS: list[tuple] = []
 
 
 def profile_summary(slowest: int = 5) -> str:

@@ -1,11 +1,10 @@
-from typing import List
 from pathlib import Path
 
 from biotrainer_core.data_classes import SequenceData
-from biotrainer_core.input_files import read_FASTA, pgym_csv_to_fasta, write_FASTA
+from biotrainer_core.input_files import pgym_csv_to_fasta, read_FASTA, write_FASTA
 
 
-def remove_outliers(seq_data: List[SequenceData]):
+def remove_outliers(seq_data: list[SequenceData]):
     """Remove outliers from the dataset based on the mean and standard deviation. (Currently not used)"""
     id2label = {data_point.seq_id: float(data_point.label) for data_point in seq_data}
 

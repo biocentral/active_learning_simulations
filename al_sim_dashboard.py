@@ -7,18 +7,14 @@ Run with:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Callable
 
+import numpy as np
+import pandas as pd
+import streamlit as st
 from biocentral_api import ProjectionResult
 from biocentral_vis import BiocentralChart
-from biotrainer_core.input_files import read_FASTA
-from biotrainer_core.data_classes import SequenceData
-
-import streamlit as st
-import pandas as pd
-import numpy as np
-
 from bioengineer_active_learning_simulations import plots as al_plots
 from bioengineer_active_learning_simulations.dashboard_models import (
     DashboardCompressedData,
@@ -30,6 +26,8 @@ from bioengineer_active_learning_simulations.simulators import (
     ActiveLearningSimulator,
     get_simulator,
 )
+from biotrainer_core.data_classes import SequenceData
+from biotrainer_core.input_files import read_FASTA
 
 st.set_page_config(page_title="AL Simulation Dashboard", layout="wide")
 
@@ -40,13 +38,13 @@ def _get_run_files():
 
 
 @st.cache_data(show_spinner=True)
-def _load_dataset_sequences(selected_dataset: str) -> List[SequenceData]:
+def _load_dataset_sequences(selected_dataset: str) -> list[SequenceData]:
     al_sim_dataset_path = ALSimulatorDataset[selected_dataset].to_path()
     return read_FASTA(al_sim_dataset_path)
 
 
 @st.cache_data(show_spinner=False)
-def _load_compressed(run_file_paths: List[Path]) -> Dict[str, DashboardCompressedData]:
+def _load_compressed(run_file_paths: list[Path]) -> dict[str, DashboardCompressedData]:
     result = {}  # name to compressed data
     for path in run_file_paths:
         try:
@@ -63,7 +61,7 @@ def _load_compressed(run_file_paths: List[Path]) -> Dict[str, DashboardCompresse
 @st.cache_data(show_spinner=False)
 def _load_projection(
     dataset_id: ALSimulatorDataset, embedder_name: str
-) -> Optional[ProjectionResult]:
+) -> ProjectionResult | None:
     embedder_name = embedder_name.replace("/", "-")
     projection_path = (
         PROJECTIONS_DIR / f"projection_result_{dataset_id.name}_{embedder_name}.json"
@@ -141,7 +139,7 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
 
     # Added: chart with suggestions metric overlay if available
     if exp.per_sim_metrics_suggestions:
-        st.subheader(f"Model performance evolution (Suggestions) — mean per simulation")
+        st.subheader("Model performance evolution (Suggestions) — mean per simulation")
         # Build a custom overlay chart?
         # Actually al_plots.build_mean_metric_evolution_chart doesn't seem to support suggestions
         # But we can at least show the mean suggestions metric
@@ -292,7 +290,7 @@ def _render_single_simulation(
         st.markdown(f"- **iteration_hits:** `{sim_data.iteration_hits}`")
 
 
-def _extract_consecutive_failures_threshold(stop_reasons: List[str]) -> Optional[int]:
+def _extract_consecutive_failures_threshold(stop_reasons: list[str]) -> int | None:
     for reason in stop_reasons:
         if "consecutive failures" in reason.lower():
             match = re.search(r"\((\d+)\)", reason)
@@ -301,7 +299,7 @@ def _extract_consecutive_failures_threshold(stop_reasons: List[str]) -> Optional
     return None
 
 
-def _extract_unique_hits(exps: List[DashboardExperimentData]) -> Tuple[Set[str], float]:
+def _extract_unique_hits(exps: list[DashboardExperimentData]) -> tuple[set[str], float]:
     """Get all unique hits and the std. dev. of all iteration hits found via bootstrapping."""
     all_hits = sum(e.aggregated_hits for e in exps)
     all_iteration_hits = []
@@ -342,8 +340,8 @@ def _extract_unique_hits(exps: List[DashboardExperimentData]) -> Tuple[Set[str],
 
 
 def _extract_average_hits_per_campaign(
-    exps: List[DashboardExperimentData],
-) -> Tuple[float, float]:
+    exps: list[DashboardExperimentData],
+) -> tuple[float, float]:
     all_single_sims = []
     for e in exps:
         for single_sim in e.single_sims:
@@ -356,7 +354,7 @@ def _extract_average_hits_per_campaign(
     return total_hits_mean, total_hits_std
 
 
-def _render_inner_simulation_comparison(subset: List[DashboardExperimentData]) -> None:
+def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -> None:
     st.header("Comparison")
     mode = st.radio(
         "Compare by",
@@ -367,7 +365,7 @@ def _render_inner_simulation_comparison(subset: List[DashboardExperimentData]) -
 
     group_by = "model" if mode == "Surrogate Model" else "embedder"
 
-    groups: Dict[str, List[DashboardExperimentData]] = {}
+    groups: dict[str, list[DashboardExperimentData]] = {}
     for exp in subset:
         key = getattr(exp, group_by)
         if key not in groups:
@@ -477,7 +475,7 @@ def _render_dataset_tab(selected_dataset: str, base_config, exps):
         100 * n_potential_hits / len(base_config.simulation_data), 2
     )
     st.metric(
-        f"**Number of potential hits:**",
+        "**Number of potential hits:**",
         value=f"{n_potential_hits} ({n_potential_hits_percent} %)",
         help="Total number of potential hits in the dataset given the campaign configuration.",
     )
@@ -498,7 +496,7 @@ def _render_dataset_tab(selected_dataset: str, base_config, exps):
     df = df.drop(columns=["attributes", "embedding", "mask", "set"], errors="ignore")
 
     st.markdown(
-        f"**Simulation Data**",
+        "**Simulation Data**",
         help="Dataframe of the simulation dataset (highlighted rows are potential hits).",
     )
 
@@ -512,7 +510,7 @@ def _render_dataset_tab(selected_dataset: str, base_config, exps):
     # Label distribution Chart
     biotrainer_chart = BiocentralChart.label_distribution(dataset_sequences)
     st.markdown(
-        f"**Dataset Label Distribution**",
+        "**Dataset Label Distribution**",
         help="Distribution of all labels in the dataset.",
     )
     chart = biotrainer_chart.chart
@@ -529,7 +527,7 @@ def _render_dataset_tab(selected_dataset: str, base_config, exps):
 
 def _extract_cross_dataset_data(
     group_by: str,
-    ds_groups: Dict[str, List[DashboardExperimentData]],
+    ds_groups: dict[str, list[DashboardExperimentData]],
     dict_constructor: Callable,
 ):
     cross_dataset_data = {}  # ds_name -> n unique hits
@@ -554,7 +552,7 @@ def _extract_cross_dataset_data(
     return cross_dataset_data
 
 
-def _plot_cross_dataset_data(cross_dataset_data: Dict, value_name: str):
+def _plot_cross_dataset_data(cross_dataset_data: dict, value_name: str):
     import altair as alt
     import pandas as pd
 
@@ -636,7 +634,7 @@ def _plot_cross_dataset_data(cross_dataset_data: Dict, value_name: str):
 
 
 def _render_cross_dataset_comparison(
-    ds_groups: Dict[str, List[DashboardExperimentData]],
+    ds_groups: dict[str, list[DashboardExperimentData]],
 ):
     st.markdown("## Cross-dataset comparison")
     mode = st.radio(
@@ -745,7 +743,7 @@ def main():
     compressed_data = all_compressed_data[selected_run]
 
     # Group by dataset
-    ds_groups: Dict[str, List[DashboardExperimentData]] = {}
+    ds_groups: dict[str, list[DashboardExperimentData]] = {}
     for exp in compressed_data.experiments:
         dataset_name = exp.dataset_id.name
         if dataset_name not in ds_groups:

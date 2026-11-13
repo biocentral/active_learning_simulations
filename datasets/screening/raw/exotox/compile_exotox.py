@@ -1,5 +1,4 @@
 import pandas as pd
-
 from biotrainer_core.data_classes import SequenceData
 from biotrainer_core.input_files import read_FASTA, write_FASTA
 

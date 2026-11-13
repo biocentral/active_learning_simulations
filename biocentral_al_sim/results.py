@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import ClassVar, List, Optional
+from typing import ClassVar
 
 import altair as alt
 import numpy as np
@@ -126,7 +126,7 @@ class ActiveLearningSingleSimulationResult:
             raise ValueError("Result has rounds but no iteration results to count")
         return sum(len(result.suggestions or []) for result in per_round)
 
-    def hit_rate(self) -> Optional[float]:
+    def hit_rate(self) -> float | None:
         """Fraction of measured variants that turned out to be hits.
 
         Threshold-free, so it stays meaningful when no hit target is configured and the
@@ -137,7 +137,7 @@ class ActiveLearningSingleSimulationResult:
 
     @staticmethod
     def _print_stats(result: ActiveLearningScreeningSimulationResult):
-        print(f"Simulation campaign stats:")
+        print("Simulation campaign stats:")
         print(f"Simulation stop reasons: {result.stop_reasons}")
         print(f"Total number of iterations: {len(result.iteration_results or [])}")
         print(
@@ -169,7 +169,7 @@ class ActiveLearningSingleSimulationResult:
         bottom = alt.hconcat(*bottom_charts)
         return alt.vconcat(top, bottom).resolve_scale(color="independent")
 
-    def visualize(self, save_path: Optional[Path] = None) -> Path:
+    def visualize(self, save_path: Path | None = None) -> Path:
         self._print_stats(self.simulation_result)
         charts = self.build_altair_charts()
         layout = self._compose_layout(charts)
@@ -288,7 +288,7 @@ SINGLE_SIMULATION_RESULTS = {
 
 
 class ActiveLearningMultipleSimulationResult:
-    def __init__(self, simulation_results: List[ActiveLearningSingleSimulationResult]):
+    def __init__(self, simulation_results: list[ActiveLearningSingleSimulationResult]):
         self.simulation_results = simulation_results
         self._validate()
 
@@ -342,7 +342,7 @@ class ActiveLearningMultipleSimulationResult:
     def model_type(self) -> ActiveLearningModelType:
         return self.simulation_results[0].al_campaign_config.model_type
 
-    def potential_hits(self) -> List[str]:
+    def potential_hits(self) -> list[str]:
         return self.simulation_results[0].simulation_result.potential_hits
 
     def get_best_simulation(self):
@@ -380,7 +380,7 @@ class ActiveLearningMultipleSimulationResult:
             * 100
         )
 
-    def mean_hit_rate(self) -> Optional[float]:
+    def mean_hit_rate(self) -> float | None:
         rates = [
             rate
             for rate in (ssr.hit_rate() for ssr in self.simulation_results)
@@ -406,7 +406,7 @@ class ActiveLearningMultipleSimulationResult:
             charts["mean_metric_evolution"],
         ).resolve_scale(color="independent")
 
-    def visualize(self, save_path: Optional[Path] = None) -> Path:
+    def visualize(self, save_path: Path | None = None) -> Path:
         self.print_stats()
         print("Visualizing aggregated results across multiple simulations...")
         charts = self.build_altair_charts()

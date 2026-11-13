@@ -1,9 +1,8 @@
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
 from biocentral_api import ActiveLearningOptimizationMode
+from pydantic import BaseModel, Field
 
 
 class ALSimulatorDatasetDefinition(BaseModel):
@@ -13,19 +12,19 @@ class ALSimulatorDatasetDefinition(BaseModel):
     optimization_mode: ActiveLearningOptimizationMode = Field(
         description="How the labels are optimized"
     )
-    discrete_targets: Optional[List[str]] = Field(
+    discrete_targets: list[str] | None = Field(
         default=None, description="Target labels (mode: DISCRETE)"
     )
-    target_lb: Optional[float] = Field(
+    target_lb: float | None = Field(
         default=None, description="Lower bound of the target (mode: INTERVAL)"
     )
-    target_ub: Optional[float] = Field(
+    target_ub: float | None = Field(
         default=None, description="Upper bound of the target (mode: INTERVAL)"
     )
-    target_value: Optional[float] = Field(
+    target_value: float | None = Field(
         default=None, description="Target value (mode: VALUE)"
     )
-    reference_fasta_path: Optional[str] = Field(
+    reference_fasta_path: str | None = Field(
         default=None,
         description="Single-sequence FASTA with the wild type this dataset mutates. Only mutational "
         "landscapes have one; mutation-aware splits (see splits) require it.",
@@ -80,7 +79,7 @@ class ALSimulatorDataset(Enum):
             raise ValueError(f"No dataset definition for {self.name}.")
         return definition
 
-    def reference_sequence(self) -> Optional[str]:
+    def reference_sequence(self) -> str | None:
         """Wild-type sequence of this dataset, or None if it is not a mutational landscape."""
         reference_path = self.definition().reference_fasta_path
         if reference_path is None:
@@ -90,7 +89,7 @@ class ALSimulatorDataset(Enum):
             line.strip() for line in lines if line and not line.startswith(">")
         )
 
-    def to_path(self, path_override: Optional[Dict[str, str]] = None) -> str:
+    def to_path(self, path_override: dict[str, str] | None = None) -> str:
         path = None
         if path_override:
             path = path_override.get(self.name)
@@ -99,7 +98,7 @@ class ALSimulatorDataset(Enum):
         return self.definition().fasta_path
 
 
-_DATASET_DEFINITIONS: Dict[str, ALSimulatorDatasetDefinition] = {
+_DATASET_DEFINITIONS: dict[str, ALSimulatorDatasetDefinition] = {
     ALSimulatorDataset.MELTOME_MAXIMIZE.name: ALSimulatorDatasetDefinition(
         fasta_path="datasets/screening/biotrainer_meltome_mixed_max2000.fasta",
         optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,

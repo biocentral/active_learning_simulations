@@ -10,10 +10,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import seaborn as sns
+from bioengineer_active_learning_simulations.datasets import ALSimulatorDataset
 from biotrainer_core.input_files import read_FASTA
 from matplotlib.ticker import FuncFormatter
-
-from bioengineer_active_learning_simulations.datasets import ALSimulatorDataset
 
 logger = logging.getLogger(__name__)
 

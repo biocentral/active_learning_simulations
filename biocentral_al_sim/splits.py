@@ -34,23 +34,16 @@ from __future__ import annotations
 import random
 from abc import abstractmethod
 from collections import Counter
+from collections.abc import Sequence
 from enum import Enum, auto
 from typing import (
     Annotated,
-    Dict,
-    FrozenSet,
-    List,
     Literal,
-    Optional,
-    Sequence,
-    Set,
-    Union,
 )
 
-from pydantic import BaseModel, Field, model_validator
-from biotrainer_core.data_classes import SequenceData
 from biocentral_api import Mutation  # reject Mutation from biotrainer-core
-
+from biotrainer_core.data_classes import SequenceData
+from pydantic import BaseModel, Field, model_validator
 
 DEFAULT_SEED = 43
 """Default seed, deliberately not biotrainer's 42 so an explicit seed stays recognisable.
@@ -115,10 +108,10 @@ class SiteMatch(str, Enum):
 class SplitAssignment(BaseModel):
     """A partition of a pool into the campaign's starting set and the variants it must reach."""
 
-    train_ids: List[str] = Field(
+    train_ids: list[str] = Field(
         min_length=1, description="Sequences the campaign starts from"
     )
-    test_ids: List[str] = Field(
+    test_ids: list[str] = Field(
         min_length=1, description="Sequences withheld from the starting set"
     )
     description: str = Field(
@@ -143,20 +136,20 @@ class SplitAssignment(BaseModel):
 class SplitContext(BaseModel):
     """Everything a strategy may need beyond the sequences themselves."""
 
-    reference_sequence: Optional[str] = Field(
+    reference_sequence: str | None = Field(
         default=None,
         description="Parent sequence that substitutions are counted against",
     )
-    wildtype_of: Optional[Dict[str, str]] = Field(
+    wildtype_of: dict[str, str] | None = Field(
         default=None, description="seq_id -> parent identifier, for multi-WT datasets"
     )
 
     @staticmethod
     def build(
         pool: Sequence[SequenceData],
-        explicit_reference: Optional[str] = None,
+        explicit_reference: str | None = None,
         strategy: ReferenceStrategy = ReferenceStrategy.EXPLICIT,
-        wildtype_of: Optional[Dict[str, str]] = None,
+        wildtype_of: dict[str, str] | None = None,
     ) -> SplitContext:
         match strategy:
             case ReferenceStrategy.EXPLICIT:
@@ -177,7 +170,7 @@ class SplitContext(BaseModel):
             )
         return self.reference_sequence
 
-    def require_wildtypes(self, kind: str) -> Dict[str, str]:
+    def require_wildtypes(self, kind: str) -> dict[str, str]:
         if not self.wildtype_of:
             raise ValueError(
                 f"Split '{kind}' partitions by parent sequence and therefore needs a seq_id -> wild-type mapping, "
@@ -232,7 +225,7 @@ def consensus_sequence(
     return "".join(consensus)
 
 
-def substitutions(sequence: str, reference: str) -> FrozenSet[str]:
+def substitutions(sequence: str, reference: str) -> frozenset[str]:
     """Substitutions of `sequence` against `reference`."""
     return frozenset(
         f"{expected}{index + 1}{actual}"
@@ -309,7 +302,7 @@ class SequenceSelector(BaseModel):
     @abstractmethod
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         """Return the subset of `pool` this selector admits, preserving input order."""
 
     def describe(self) -> str:
@@ -329,8 +322,8 @@ class MutationCount(SequenceSelector):
     """
 
     kind: Literal["mutation_count"] = "mutation_count"
-    min_mutations: Optional[int] = Field(default=None, ge=0)
-    max_mutations: Optional[int] = Field(default=None, ge=0)
+    min_mutations: int | None = Field(default=None, ge=0)
+    max_mutations: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _check_bounds(self) -> MutationCount:
@@ -348,7 +341,7 @@ class MutationCount(SequenceSelector):
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         reference = context.require_reference(self.kind)
         selected = []
         for data_point in pool:
@@ -369,8 +362,8 @@ class LabelInterval(SequenceSelector):
     """
 
     kind: Literal["label_interval"] = "label_interval"
-    lower_bound: Optional[float] = None
-    upper_bound: Optional[float] = None
+    lower_bound: float | None = None
+    upper_bound: float | None = None
 
     @model_validator(mode="after")
     def _check_bounds(self) -> LabelInterval:
@@ -388,7 +381,7 @@ class LabelInterval(SequenceSelector):
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         selected = []
         for data_point in pool:
             value = _as_float(data_point)
@@ -408,11 +401,11 @@ class LabelIn(SequenceSelector):
     """
 
     kind: Literal["label_in"] = "label_in"
-    labels: List[str] = Field(min_length=1)
+    labels: list[str] = Field(min_length=1)
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         wanted = set(self.labels)
         return [data_point for data_point in pool if str(data_point.label) in wanted]
 
@@ -421,12 +414,12 @@ class MutatedSites(SequenceSelector):
     """Variants whose mutated positions relate to `positions` as given by `match`."""
 
     kind: Literal["mutated_sites"] = "mutated_sites"
-    positions: List[int] = Field(min_length=1)
+    positions: list[int] = Field(min_length=1)
     match: SiteMatch = SiteMatch.ANY
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         reference = context.require_reference(self.kind)
         wanted = set(self.positions)
         selected = []
@@ -450,8 +443,8 @@ class SequenceLength(SequenceSelector):
     """Variants whose length lies within [`min_length`, `max_length`] (inclusive)."""
 
     kind: Literal["sequence_length"] = "sequence_length"
-    min_length: Optional[int] = Field(default=None, ge=1)
-    max_length: Optional[int] = Field(default=None, ge=1)
+    min_length: int | None = Field(default=None, ge=1)
+    max_length: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _check_bounds(self) -> SequenceLength:
@@ -469,7 +462,7 @@ class SequenceLength(SequenceSelector):
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         selected = []
         for data_point in pool:
             length = len(data_point.seq)
@@ -491,8 +484,8 @@ class RandomSample(SequenceSelector):
     """
 
     kind: Literal["random_sample"] = "random_sample"
-    n: Optional[int] = Field(default=None, ge=1)
-    fraction: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+    n: int | None = Field(default=None, ge=1)
+    fraction: float | None = Field(default=None, gt=0.0, le=1.0)
     seed: int = Field(default=DEFAULT_SEED)
 
     @model_validator(mode="after")
@@ -503,7 +496,7 @@ class RandomSample(SequenceSelector):
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         size = (
             self.n if self.n is not None else max(1, round(len(pool) * self.fraction))
         )
@@ -517,11 +510,11 @@ class AllOf(SequenceSelector):
     """Intersection: every child selector must admit the sequence."""
 
     kind: Literal["all_of"] = "all_of"
-    selectors: List["AnySelector"] = Field(min_length=1)
+    selectors: list[AnySelector] = Field(min_length=1)
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         selected = list(pool)
         for selector in self.selectors:
             selected = selector.select(selected, context)
@@ -537,12 +530,12 @@ class AnyOf(SequenceSelector):
     """Unionr: at least one child selector must admit the sequence."""
 
     kind: Literal["any_of"] = "any_of"
-    selectors: List["AnySelector"] = Field(min_length=1)
+    selectors: list[AnySelector] = Field(min_length=1)
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
-        admitted: Set[str] = set()
+    ) -> list[SequenceData]:
+        admitted: set[str] = set()
         for selector in self.selectors:
             admitted.update(
                 data_point.seq_id for data_point in selector.select(pool, context)
@@ -564,11 +557,11 @@ class Complement(SequenceSelector):
     """
 
     kind: Literal["complement"] = "complement"
-    selector: "AnySelector"
+    selector: AnySelector
 
     def select(
         self, pool: Sequence[SequenceData], context: SplitContext
-    ) -> List[SequenceData]:
+    ) -> list[SequenceData]:
         excluded = {
             data_point.seq_id for data_point in self.selector.select(pool, context)
         }
@@ -579,17 +572,15 @@ class Complement(SequenceSelector):
 
 
 AnySelector = Annotated[
-    Union[
-        MutationCount,
-        LabelInterval,
-        LabelIn,
-        MutatedSites,
-        SequenceLength,
-        RandomSample,
-        AllOf,
-        AnyOf,
-        Complement,
-    ],
+    MutationCount
+    | LabelInterval
+    | LabelIn
+    | MutatedSites
+    | SequenceLength
+    | RandomSample
+    | AllOf
+    | AnyOf
+    | Complement,
     Field(discriminator="kind"),
 ]
 
@@ -651,13 +642,13 @@ class PositionSplit(SplitStrategy):
     """
 
     kind: Literal["position"] = "position"
-    test_positions: Optional[List[int]] = Field(
+    test_positions: list[int] | None = Field(
         default=None, description="1-based positions to hold out"
     )
-    n_test_positions: Optional[int] = Field(
+    n_test_positions: int | None = Field(
         default=None, ge=1, description="How many positions to hold out"
     )
-    test_fraction: Optional[float] = Field(
+    test_fraction: float | None = Field(
         default=None,
         gt=0.0,
         lt=1.0,
@@ -731,10 +722,10 @@ class MutationSplit(SplitStrategy):
     """
 
     kind: Literal["mutation"] = "mutation"
-    test_mutations: Optional[List[str]] = Field(
+    test_mutations: list[str] | None = Field(
         default=None, description="Substitutions to hold out, e.g. A30S"
     )
-    test_fraction: Optional[float] = Field(
+    test_fraction: float | None = Field(
         default=None,
         gt=0.0,
         lt=1.0,
@@ -764,7 +755,7 @@ class MutationSplit(SplitStrategy):
         per_variant = {dp.seq_id: substitutions(dp.seq, reference) for dp in pool}
 
         if self.test_mutations is not None:
-            held_out: Set[str] = set(self.test_mutations)
+            held_out: set[str] = set(self.test_mutations)
         else:
             distinct = sorted({s for subs in per_variant.values() for s in subs})
             size = max(1, round(len(distinct) * self.test_fraction))
@@ -795,13 +786,13 @@ class ScoreSplit(SplitStrategy):
     """
 
     kind: Literal["score"] = "score"
-    train_quantile: Optional[float] = Field(
+    train_quantile: float | None = Field(
         default=None,
         gt=0.0,
         lt=1.0,
         description="Share of the pool, by rank, that trains",
     )
-    train_threshold: Optional[float] = Field(
+    train_threshold: float | None = Field(
         default=None, description="Absolute label cutoff for training"
     )
     train_on: ScoreEnd = Field(
@@ -856,7 +847,7 @@ class WildTypeSplit(SplitStrategy):
     """
 
     kind: Literal["wildtype"] = "wildtype"
-    test_wildtypes: List[str] = Field(
+    test_wildtypes: list[str] = Field(
         min_length=1, description="Parent identifiers to hold out entirely"
     )
 
@@ -917,14 +908,12 @@ class SelectorSplit(SplitStrategy):
 
 
 AnySplitStrategy = Annotated[
-    Union[
-        MutationNumberSplit,
-        PositionSplit,
-        MutationSplit,
-        ScoreSplit,
-        WildTypeSplit,
-        SelectorSplit,
-    ],
+    MutationNumberSplit
+    | PositionSplit
+    | MutationSplit
+    | ScoreSplit
+    | WildTypeSplit
+    | SelectorSplit,
     Field(discriminator="kind"),
 ]
 
@@ -937,8 +926,8 @@ class PoolSubsample(BaseModel):
     Order-preserving; a pool already smaller than `n` passes through untouched.
     """
 
-    n: Optional[int] = Field(default=None, ge=2)
-    fraction: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+    n: int | None = Field(default=None, ge=2)
+    fraction: float | None = Field(default=None, gt=0.0, le=1.0)
     seed: int = Field(default=DEFAULT_SEED)
 
     @model_validator(mode="after")
@@ -947,7 +936,7 @@ class PoolSubsample(BaseModel):
             raise ValueError("PoolSubsample needs exactly one of n / fraction")
         return self
 
-    def apply(self, pool: Sequence[SequenceData]) -> List[SequenceData]:
+    def apply(self, pool: Sequence[SequenceData]) -> list[SequenceData]:
         size = (
             self.n if self.n is not None else max(2, round(len(pool) * self.fraction))
         )
@@ -961,16 +950,16 @@ class ALSimulatorSplitDefinition(BaseModel):
     """A named, reusable extrapolation split, optionally preceded by a pool subsample."""
 
     description: str = Field(description="What this split withholds, and why")
-    strategy: Optional[AnySplitStrategy] = Field(
+    strategy: AnySplitStrategy | None = Field(
         default=None,
         description="None is the identity split: the whole pool is the starting set",
     )
-    pool_selector: Optional[AnySelector] = Field(
+    pool_selector: AnySelector | None = Field(
         default=None,
         description="Restrict the pool by a criterion before splitting, e.g. to study one corner of "
         "a landscape in isolation. Applied before `subsample`.",
     )
-    subsample: Optional[PoolSubsample] = Field(
+    subsample: PoolSubsample | None = Field(
         default=None,
         description="Shrink the pool before splitting, for landscapes too large to embed",
     )
@@ -978,7 +967,7 @@ class ALSimulatorSplitDefinition(BaseModel):
         default=ReferenceStrategy.EXPLICIT,
         description="How to obtain the parent sequence that substitution-based rules need",
     )
-    max_train_size: Optional[int] = Field(
+    max_train_size: int | None = Field(
         default=None,
         ge=2,
         description="Cap the starting set, moving the surplus into the withheld half",
@@ -995,15 +984,15 @@ class ALSimulatorSplitDefinition(BaseModel):
         )
 
     @property
-    def axis(self) -> Optional[ExtrapolationAxis]:
+    def axis(self) -> ExtrapolationAxis | None:
         return self.strategy.axis if self.strategy is not None else None
 
     def resolve(
         self,
         pool: Sequence[SequenceData],
-        explicit_reference: Optional[str] = None,
-        wildtype_of: Optional[Dict[str, str]] = None,
-    ) -> tuple[List[SequenceData], Optional[SplitAssignment]]:
+        explicit_reference: str | None = None,
+        wildtype_of: dict[str, str] | None = None,
+    ) -> tuple[list[SequenceData], SplitAssignment | None]:
         """Return the (possibly restricted) pool and its train/test assignment.
 
         Order is: derive the parent sequence, narrow the pool by `pool_selector`, then `subsample`,
@@ -1061,11 +1050,11 @@ class ALSimulatorSplit(Enum):
     FULL_POOL = auto()
 
     @staticmethod
-    def all() -> List["ALSimulatorSplit"]:
+    def all() -> list[ALSimulatorSplit]:
         return list(ALSimulatorSplit)
 
     @staticmethod
-    def for_axis(axis: ExtrapolationAxis) -> List["ALSimulatorSplit"]:
+    def for_axis(axis: ExtrapolationAxis) -> list[ALSimulatorSplit]:
         return [split for split in ALSimulatorSplit if split.definition().axis is axis]
 
     def definition(self) -> ALSimulatorSplitDefinition:
@@ -1080,15 +1069,15 @@ class ALSimulatorSplit(Enum):
     def resolve(
         self,
         pool: Sequence[SequenceData],
-        explicit_reference: Optional[str] = None,
-        wildtype_of: Optional[Dict[str, str]] = None,
-    ) -> tuple[List[SequenceData], Optional[SplitAssignment]]:
+        explicit_reference: str | None = None,
+        wildtype_of: dict[str, str] | None = None,
+    ) -> tuple[list[SequenceData], SplitAssignment | None]:
         return self.definition().resolve(
             pool, explicit_reference=explicit_reference, wildtype_of=wildtype_of
         )
 
 
-_SPLIT_DEFINITIONS: Dict[str, ALSimulatorSplitDefinition] = {
+_SPLIT_DEFINITIONS: dict[str, ALSimulatorSplitDefinition] = {
     ALSimulatorSplit.FULL_POOL.name: ALSimulatorSplitDefinition(
         description="No restriction: the campaign may start anywhere in the pool.",
         strategy=None,
