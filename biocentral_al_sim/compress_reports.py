@@ -5,7 +5,7 @@ from .dashboard_models import (
     DashboardExperimentData,
     DashboardSingleSimulationData,
 )
-from .paths import RESULTS_DIR
+from .paths import RESULTS_DIR, RUN_VERSION
 from .results import ActiveLearningMultipleSimulationResult
 
 
@@ -109,3 +109,7 @@ def compress_reports(run_name: str):
         f.write(compressed.model_dump_json(indent=4))
 
     print(f"Successfully created {OUTPUT_FILE} with {len(experiments)} experiments.")
+
+
+if __name__ == "__main__":
+    compress_reports(RUN_VERSION)

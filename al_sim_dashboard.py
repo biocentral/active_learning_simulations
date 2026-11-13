@@ -1,6 +1,7 @@
 """Streamlit dashboard for active learning simulation results.
 
-Run with:
+Compress the results, then run the dashboard:
+    uv run python -m biocentral_al_sim.compress_reports
     uv run streamlit run al_sim_dashboard.py
 """
 
@@ -731,7 +732,8 @@ def main():
         st.sidebar.success("Loaded all results.")
     else:
         st.error(
-            f"Compressed data files not found at `{RESULTS_DIR}`. Please run `compress_reports.py` first."
+            f"Compressed data files not found at `{RESULTS_DIR}`. "
+            "Run `uv run python -m biocentral_al_sim.compress_reports` first."
         )
         st.stop()
 
