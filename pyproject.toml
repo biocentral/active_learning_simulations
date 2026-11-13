@@ -15,6 +15,7 @@ dependencies = [
     "biocentral-vis>=2.0.0,<3.0.0",
     "biotrainer-core>=2.0.0,<3.0.0",
     "openpyxl>=3.1",
+    "rich>=15.0",
 ]
 
 [dependency-groups]
