@@ -21,7 +21,7 @@ test_seqs = read_FASTA(test_fasta)
 
 all_seqs = train_seqs + test_seqs
 assert len(all_seqs) == len(train_seqs) + len(test_seqs)
-assert len(all_seqs) == len(set(seq.seq_id for seq in all_seqs))
+assert len(all_seqs) == len({seq.seq_id for seq in all_seqs})
 
 train_labels = read_labels(train_labels)
 test_labels = read_labels(test_labels)

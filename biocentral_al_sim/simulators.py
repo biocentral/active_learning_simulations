@@ -99,8 +99,10 @@ def profile_summary(slowest: int = 5) -> str:
     waited = totals["total"] - totals["http"] - totals["sleep"] - totals["handler"]
 
     lines = [
-        f"{len(TASK_TIMINGS)} campaigns, {totals['total']:.0f}s of client wall time "
-        f"({polls} polls, {dtos} dtos)"
+        (
+            f"{len(TASK_TIMINGS)} campaigns, {totals['total']:.0f}s of client wall time "
+            f"({polls} polls, {dtos} dtos)"
+        )
     ]
     for label, value in (
         ("http (+deserialise)", totals["http"]),
@@ -186,8 +188,10 @@ class ActiveLearningSimulator(ABC):
         result = task.run_with_progress() if show_progress else task.run()
         TASK_TIMINGS.append(
             (
-                f"{self.base_config.dataset_id.name}/{embedder_name}/{model_type.value}"
-                f"/{self.base_config.settings.short_name}/seed{seed}",
+                (
+                    f"{self.base_config.dataset_id.name}/{embedder_name}/{model_type.value}"
+                    f"/{self.base_config.settings.short_name}/seed{seed}"
+                ),
                 task.timing,
             )
         )

@@ -52,7 +52,7 @@ def _load_compressed(run_file_paths: list[Path]) -> dict[str, DashboardCompresse
                 path.read_text()
             )
             result[compressed_data.run_name] = compressed_data
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             st.sidebar.error(f"Failed to load compressed data: {exc}")
             continue
     return result
@@ -306,8 +306,7 @@ def _extract_unique_hits(exps: list[DashboardExperimentData]) -> tuple[set[str],
     for e in exps:
         single_sim_res = e.single_sims
         for single_sim in single_sim_res:
-            for it_hit in single_sim.iteration_hits:
-                all_iteration_hits.append(it_hit)
+            all_iteration_hits.extend(single_sim.iteration_hits)
 
     all_hits_flattened = [hit for sublist in all_iteration_hits for hit in sublist]
     all_unique_hits = set(all_hits_flattened)
@@ -344,8 +343,7 @@ def _extract_average_hits_per_campaign(
 ) -> tuple[float, float]:
     all_single_sims = []
     for e in exps:
-        for single_sim in e.single_sims:
-            all_single_sims.append(single_sim)
+        all_single_sims.extend(e.single_sims)
     n_all_hits_list = [
         sum(list(map(len, single_sim.iteration_hits))) for single_sim in all_single_sims
     ]
@@ -561,7 +559,7 @@ def _plot_cross_dataset_data(cross_dataset_data: dict, value_name: str):
     for key, values in cross_dataset_data.items():
         if isinstance(values, dict) and "std" in values:
             # Extract the main metric (first key that's not 'std')
-            metric_key = [k for k in values.keys() if k != "std"][0]
+            metric_key = next(k for k in values if k != "std")
             mean_value = values[metric_key]
             std_value = values["std"]
             plot_data.append(
