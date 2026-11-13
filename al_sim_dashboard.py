@@ -35,7 +35,7 @@ st.set_page_config(page_title="AL Simulation Dashboard", layout="wide")
 
 @st.cache_data(show_spinner=True)
 def _get_run_files():
-    return list(RESULTS_DIR.glob("*.json"))
+    return list(RESULTS_DIR.glob("compressed_dashboard_data_*.json"))
 
 
 @st.cache_data(show_spinner=True)
