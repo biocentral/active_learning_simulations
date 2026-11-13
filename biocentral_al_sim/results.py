@@ -39,12 +39,14 @@ class ActiveLearningSingleSimulationResult:
         | ActiveLearningEngineeringSimulationConfig,
         simulation_result: ActiveLearningScreeningSimulationResult,
         split_id: ALSimulatorSplit = ALSimulatorSplit.FULL_POOL,
+        commits: dict[str, str | None] | None = None,
     ):
         self.dataset_id = dataset_id
         self.al_campaign_config = al_campaign_config
         self.al_simulation_config = al_simulation_config
         self.simulation_result = simulation_result
         self.split_id = split_id
+        self.commits = commits
 
     def get_total_number_of_suggestions(self):
         return sum([len(it_res.suggestions) for it_res in self.simulation_result.iteration_results])
@@ -65,6 +67,7 @@ class ActiveLearningSingleSimulationResult:
                 "simulation_result": json.loads(
                     self.simulation_result.model_dump_json()
                 ),
+                "commits": self.commits,
             }
         )
 
@@ -91,6 +94,8 @@ class ActiveLearningSingleSimulationResult:
             simulation_result=ActiveLearningScreeningSimulationResult.model_validate_json(
                 json.dumps(data["simulation_result"])
             ),
+            # Results written before commits were recorded have none
+            commits=data.get("commits"),
         )
 
     def is_success(self):

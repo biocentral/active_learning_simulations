@@ -14,6 +14,8 @@ Mutation generation per default is random sampling from the annotated landscape.
 Result JSON filenames are named by throughput tag + CampaignSettings fingerprint
 """
 
+import json
+import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -22,6 +24,7 @@ from itertools import product
 from pathlib import Path
 from queue import Queue
 from time import monotonic
+from urllib.request import urlopen
 
 from biocentral_api import ActiveLearningModelType, CommonEmbedder
 from biotrainer_core.data_classes import SequenceData
@@ -196,12 +199,14 @@ def run_experiment(
     settings: EngineeringCampaignSettings,
     show_progress: bool = True,
     on_replicate: Callable[[int], None] | None = None,
+    commits: dict[str, str | None] | None = None,
 ) -> ActiveLearningMultipleSimulationResult:
     """Run one experiment over `settings.n_replicates` replicates, skipping those already saved.
 
     Args:
         show_progress: Print each replicate and show the client's progress bar.
         on_replicate: Called with the replicate index as each replicate starts.
+        commits: Recorded on each replicate this call runs.
 
     Returns:
         The first `settings.n_replicates` replicates' results, saved under `result_file_name`.
@@ -244,20 +249,28 @@ def run_experiment(
                 f"(campaign seed {seed}, draw seed {draw_seed})",
                 flush=True,
             )
-        results.append(
-            ActiveLearningEngineeringSimulator(base_config).run_replicate(
-                model_type=model_type,
-                embedder_name=embedder_name,
-                seed=seed,
-                show_progress=show_progress,
-            )
+        result = ActiveLearningEngineeringSimulator(base_config).run_replicate(
+            model_type=model_type,
+            embedder_name=embedder_name,
+            seed=seed,
+            show_progress=show_progress,
         )
+        result.commits = commits
+        results.append(result)
 
     multi = ActiveLearningMultipleSimulationResult(done + results)
     multi.save(save_path)
     if show_progress:
         multi.print_stats()
     return multi
+
+
+def git_commit(repo: Path) -> str:
+    """Full hash of `repo`'s HEAD, suffixed `-dirty` for uncommitted changes."""
+    describe = ["describe", "--always", "--dirty", "--abbrev=40", "--exclude=*"]
+    return subprocess.run(
+        ["git", "-C", str(repo), *describe], capture_output=True, text=True, check=True
+    ).stdout.strip()
 
 
 SHORT_EMBEDDER = {
@@ -367,7 +380,17 @@ def main(
         settings, dataset_id, embedder_name, model_type = combination
         return result_file_name(dataset_id, embedder_name, model_type, settings)
 
-    biocentral_api()  # warm the cached client before any worker starts
+    # The health check also warms the cached client before any worker starts
+    server_url = next(
+        url for url, healthy, _ in biocentral_api().get_health_status() if healthy
+    )
+    with urlopen(f"{server_url}/health") as response:
+        server_commit = json.load(response).get("commit")
+    commits = {
+        "active_learning": git_commit(Path(__file__).parent),
+        "server": server_commit,
+    }
+    print(f"Commits: {commits}")
 
     with _progress() as progress:
         regimes = ", ".join(dict.fromkeys(settings.short_name for settings in settings))
@@ -404,6 +427,7 @@ def main(
                         settings,
                         # The client's own bar cannot share a terminal with this display.
                         show_progress=False,
+                        commits=commits,
                         on_replicate=lambda index: progress.update(
                             row,
                             completed=index,
