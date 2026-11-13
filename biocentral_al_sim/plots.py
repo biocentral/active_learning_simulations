@@ -29,8 +29,10 @@ def _align_iteration_lengths(*lists: list | None) -> tuple[int, list[list]]:
 
 def _compute_convergence_stats(
     per_sim_n_hits: list[list[int]],
-    n_hits_threshold: int,
+    n_hits_threshold: int | None,
 ) -> tuple[list[int], float | None, float | None]:
+    if n_hits_threshold is None:
+        return [], None, None
     convergence_iterations: list[int] = []
     for successes in per_sim_n_hits:
         if not successes:

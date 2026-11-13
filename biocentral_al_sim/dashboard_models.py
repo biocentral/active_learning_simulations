@@ -35,8 +35,10 @@ class DashboardSingleSimulationData(BaseModel):
     iteration_results_count: int = Field(
         ..., description="Total number of iteration results in the simulation"
     )
-    n_hits_threshold: int = Field(
-        ..., description="Target number of successful hits required for convergence"
+    n_hits_threshold: int | None = Field(
+        ...,
+        description="Target number of successful hits required for convergence, "
+        "None if the campaign only stops on its budget",
     )
 
 
