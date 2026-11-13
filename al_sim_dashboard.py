@@ -494,18 +494,13 @@ def _render_dataset_tab(selected_dataset: str, base_config, exps):
         df["label"] = df["label"].apply(try_float_conversion)
 
     df = df.drop(columns=["attributes", "embedding", "mask", "set"], errors="ignore")
+    df.insert(1, "potential_hit", df["seq_id"].isin(potential_hits))
 
     st.markdown(
         "**Simulation Data**",
-        help="Dataframe of the simulation dataset (highlighted rows are potential hits).",
+        help="Dataframe of the simulation dataset, potential hits first.",
     )
-
-    def highlight_potential_hits(row):
-        if row["seq_id"] in potential_hits:
-            return ["background-color: #90EE90"] * len(row)
-        return [""] * len(row)
-
-    st.dataframe(df.style.apply(highlight_potential_hits, axis=1))
+    st.dataframe(df.sort_values("potential_hit", ascending=False))
 
     # Label distribution Chart
     biotrainer_chart = BiocentralChart.label_distribution(dataset_sequences)
