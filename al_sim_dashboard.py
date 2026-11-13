@@ -3,6 +3,7 @@
 Run with:
     uv run streamlit run al_sim_dashboard.py
 """
+
 from __future__ import annotations
 
 import re
@@ -49,7 +50,9 @@ def _load_compressed(run_file_paths: List[Path]) -> Dict[str, DashboardCompresse
     result = {}  # name to compressed data
     for path in run_file_paths:
         try:
-            compressed_data = DashboardCompressedData.model_validate_json(path.read_text())
+            compressed_data = DashboardCompressedData.model_validate_json(
+                path.read_text()
+            )
             result[compressed_data.run_name] = compressed_data
         except Exception as exc:
             st.sidebar.error(f"Failed to load compressed data: {exc}")
@@ -58,9 +61,13 @@ def _load_compressed(run_file_paths: List[Path]) -> Dict[str, DashboardCompresse
 
 
 @st.cache_data(show_spinner=False)
-def _load_projection(dataset_id: ALSimulatorDataset, embedder_name: str) -> Optional[ProjectionResult]:
+def _load_projection(
+    dataset_id: ALSimulatorDataset, embedder_name: str
+) -> Optional[ProjectionResult]:
     embedder_name = embedder_name.replace("/", "-")
-    projection_path = PROJECTIONS_DIR / f"projection_result_{dataset_id.name}_{embedder_name}.json"
+    projection_path = (
+        PROJECTIONS_DIR / f"projection_result_{dataset_id.name}_{embedder_name}.json"
+    )
     if projection_path.exists():
         return ProjectionResult.model_validate_json(projection_path.read_text())
     return None
@@ -81,7 +88,11 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
 
     total_sims = len(exp.per_sim_is_success)
     avg_hits = exp.aggregated_hits / total_sims if total_sims > 0 else 0
-    success_rate = sum(1 for s in exp.per_sim_is_success if s) / total_sims if total_sims > 0 else 0
+    success_rate = (
+        sum(1 for s in exp.per_sim_is_success if s) / total_sims
+        if total_sims > 0
+        else 0
+    )
 
     cols[2].metric("Avg. hits per campaign", f"{avg_hits:.2f}")
     cols[3].metric("Success rate", f"{success_rate:.1%}")
@@ -131,7 +142,7 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
     # Added: chart with suggestions metric overlay if available
     if exp.per_sim_metrics_suggestions:
         st.subheader(f"Model performance evolution (Suggestions) — mean per simulation")
-        # Build a custom overlay chart? 
+        # Build a custom overlay chart?
         # Actually al_plots.build_mean_metric_evolution_chart doesn't seem to support suggestions
         # But we can at least show the mean suggestions metric
         suggestions_chart = al_plots.build_mean_metric_evolution_chart(
@@ -144,20 +155,25 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
 
     unique_hits, _ = _extract_unique_hits([exp])
     dataset_sequences = _load_dataset_sequences(exp.dataset_id.name)
-    projection_result = _load_projection(dataset_id=exp.dataset_id, embedder_name=exp.embedder)
+    projection_result = _load_projection(
+        dataset_id=exp.dataset_id, embedder_name=exp.embedder
+    )
     if projection_result is None:
         st.warning("Projection not available for this experiment.")
         return
     else:
-        chart_projection = BiocentralChart.projection_result(projection_result=projection_result,
-                                                                 dataset=dataset_sequences,
-                                                                 highlight_ids=unique_hits,
-                                                                 highlight_name="Unique Hits",
-                                                                 )
+        chart_projection = BiocentralChart.projection_result(
+            projection_result=projection_result,
+            dataset=dataset_sequences,
+            highlight_ids=unique_hits,
+            highlight_name="Unique Hits",
+        )
         st.altair_chart(chart_projection.chart.interactive(), use_container_width=True)
 
 
-def _render_single_simulation(exp: DashboardExperimentData, sim_data, summary: dict) -> None:
+def _render_single_simulation(
+    exp: DashboardExperimentData, sim_data, summary: dict
+) -> None:
     stop_reasons = sim_data.stop_reasons
 
     cols_row1 = st.columns(2)
@@ -173,17 +189,15 @@ def _render_single_simulation(exp: DashboardExperimentData, sim_data, summary: d
         iteration_metrics_total=sim_data.iteration_metrics_total,
         iteration_metrics_suggestions=sim_data.iteration_metrics_suggestions,
         n_iteration_hits=n_iteration_hits,
-        metric_name=metric_name
+        metric_name=metric_name,
     )
 
     chart_failures = al_plots.build_consecutive_failures_chart(
         iteration_consecutive_failures=sim_data.iteration_consecutive_failures,
-        stop_reasons=stop_reasons
+        stop_reasons=stop_reasons,
     )
 
-    chart_successes = al_plots.build_n_hits_chart(
-        n_iteration_hits=n_iteration_hits
-    )
+    chart_successes = al_plots.build_n_hits_chart(n_iteration_hits=n_iteration_hits)
 
     col_left, col_right = st.columns(2)
     with col_left:
@@ -193,7 +207,9 @@ def _render_single_simulation(exp: DashboardExperimentData, sim_data, summary: d
         st.altair_chart(chart_successes.interactive(), use_container_width=True)
 
     # Projection Chart
-    projection_result = _load_projection(dataset_id=exp.dataset_id, embedder_name=exp.embedder)
+    projection_result = _load_projection(
+        dataset_id=exp.dataset_id, embedder_name=exp.embedder
+    )
     if projection_result is None:
         st.warning("Projection not available for this experiment.")
         return
@@ -202,10 +218,12 @@ def _render_single_simulation(exp: DashboardExperimentData, sim_data, summary: d
         dataset_sequences = _load_dataset_sequences(exp.dataset_id.name)
 
         # Create options: Full dataset + each iteration
-        projection_options = ["Full Dataset"] + [f"Iteration {i + 1}" for i in range(len(sim_data.iteration_hits))]
+        projection_options = ["Full Dataset"] + [
+            f"Iteration {i + 1}" for i in range(len(sim_data.iteration_hits))
+        ]
 
         # Initialize session state for projection selection if not exists
-        if 'projection_view_idx' not in st.session_state:
+        if "projection_view_idx" not in st.session_state:
             st.session_state.projection_view_idx = 0
 
         iteration_projections = []
@@ -213,25 +231,29 @@ def _render_single_simulation(exp: DashboardExperimentData, sim_data, summary: d
         for iteration_hits in sim_data.iteration_hits:
             for hit in iteration_hits:
                 all_iteration_hits.add(hit)
-            chart_projection = BiocentralChart.projection_result(projection_result=projection_result,
-                                                                 dataset=dataset_sequences,
-                                                                 highlight_ids=set(iteration_hits),
-                                                                 highlight_name="Iteration Hits",
-                                                                 )
+            chart_projection = BiocentralChart.projection_result(
+                projection_result=projection_result,
+                dataset=dataset_sequences,
+                highlight_ids=set(iteration_hits),
+                highlight_name="Iteration Hits",
+            )
             iteration_projections.append(chart_projection)
 
-        chart_projection_full = BiocentralChart.projection_result(projection_result=projection_result,
-                                                                  dataset=dataset_sequences,
-                                                                  highlight_ids=set(all_iteration_hits),
-                                                                  highlight_name="All Hits",
-                                                                  )
+        chart_projection_full = BiocentralChart.projection_result(
+            projection_result=projection_result,
+            dataset=dataset_sequences,
+            highlight_ids=set(all_iteration_hits),
+            highlight_name="All Hits",
+        )
         projections = [chart_projection_full] + iteration_projections
 
         # Navigation controls
         col1, col2, col3 = st.columns([1, 2, 1])
 
         with col1:
-            if st.button("← Previous", disabled=st.session_state.projection_view_idx == 0):
+            if st.button(
+                "← Previous", disabled=st.session_state.projection_view_idx == 0
+            ):
                 st.session_state.projection_view_idx -= 1
                 st.rerun()
 
@@ -241,7 +263,11 @@ def _render_single_simulation(exp: DashboardExperimentData, sim_data, summary: d
             st.markdown(f"**{chart_title}**")
 
         with col3:
-            if st.button("Next →", disabled=st.session_state.projection_view_idx == len(projection_options) - 1):
+            if st.button(
+                "Next →",
+                disabled=st.session_state.projection_view_idx
+                == len(projection_options) - 1,
+            ):
                 st.session_state.projection_view_idx += 1
                 st.rerun()
 
@@ -253,9 +279,15 @@ def _render_single_simulation(exp: DashboardExperimentData, sim_data, summary: d
     with st.expander("Raw stats"):
         st.markdown(f"- **Stop reasons:** {stop_reasons}")
         st.markdown(f"- **Total iterations:** {sim_data.iteration_results_count}")
-        st.markdown(f"- **iteration_metrics_total:** `{sim_data.iteration_metrics_total}`")
-        st.markdown(f"- **iteration_metrics_suggestions:** `{sim_data.iteration_metrics_suggestions}`")
-        st.markdown(f"- **iteration_consecutive_failures:** `{sim_data.iteration_consecutive_failures}`")
+        st.markdown(
+            f"- **iteration_metrics_total:** `{sim_data.iteration_metrics_total}`"
+        )
+        st.markdown(
+            f"- **iteration_metrics_suggestions:** `{sim_data.iteration_metrics_suggestions}`"
+        )
+        st.markdown(
+            f"- **iteration_consecutive_failures:** `{sim_data.iteration_consecutive_failures}`"
+        )
         st.markdown(f"- **n_iteration_hits:** `{n_iteration_hits}`")
         st.markdown(f"- **iteration_hits:** `{sim_data.iteration_hits}`")
 
@@ -270,7 +302,7 @@ def _extract_consecutive_failures_threshold(stop_reasons: List[str]) -> Optional
 
 
 def _extract_unique_hits(exps: List[DashboardExperimentData]) -> Tuple[Set[str], float]:
-    """ Get all unique hits and the std. dev. of all iteration hits found via bootstrapping. """
+    """Get all unique hits and the std. dev. of all iteration hits found via bootstrapping."""
     all_hits = sum(e.aggregated_hits for e in exps)
     all_iteration_hits = []
     for e in exps:
@@ -281,9 +313,10 @@ def _extract_unique_hits(exps: List[DashboardExperimentData]) -> Tuple[Set[str],
 
     all_hits_flattened = [hit for sublist in all_iteration_hits for hit in sublist]
     all_unique_hits = set(all_hits_flattened)
-    assert len(all_hits_flattened) == all_hits, \
-        (f"Number of iteration hits ({len(all_iteration_hits)}) "
-         f"does not match total hits ({all_hits})")  # TODO: Optimize compression
+    assert len(all_hits_flattened) == all_hits, (
+        f"Number of iteration hits ({len(all_iteration_hits)}) "
+        f"does not match total hits ({all_hits})"
+    )  # TODO: Optimize compression
 
     # Bootstrap resampling over unique hits found to calculate std dev
     n_bootstrap = 30
@@ -292,9 +325,13 @@ def _extract_unique_hits(exps: List[DashboardExperimentData]) -> Tuple[Set[str],
 
     for _ in range(n_bootstrap):
         # Resample with replacement
-        bootstrap_sample = rng.choice(len(all_iteration_hits), size=len(all_iteration_hits), replace=True)
+        bootstrap_sample = rng.choice(
+            len(all_iteration_hits), size=len(all_iteration_hits), replace=True
+        )
         bootstrap_iteration_hits = [all_iteration_hits[i] for i in bootstrap_sample]
-        bootstrap_iteration_hits_flattened = [hit for sublist in bootstrap_iteration_hits for hit in sublist]
+        bootstrap_iteration_hits_flattened = [
+            hit for sublist in bootstrap_iteration_hits for hit in sublist
+        ]
         bootstrap_unique_hits = set(bootstrap_iteration_hits_flattened)
         bootstrap_n_unique_hits = len(bootstrap_unique_hits)
         bootstrapped_n_unique_hits.append(bootstrap_n_unique_hits)
@@ -304,12 +341,16 @@ def _extract_unique_hits(exps: List[DashboardExperimentData]) -> Tuple[Set[str],
     return all_unique_hits, bootstrap_std
 
 
-def _extract_average_hits_per_campaign(exps: List[DashboardExperimentData]) -> Tuple[float, float]:
+def _extract_average_hits_per_campaign(
+    exps: List[DashboardExperimentData],
+) -> Tuple[float, float]:
     all_single_sims = []
     for e in exps:
         for single_sim in e.single_sims:
             all_single_sims.append(single_sim)
-    n_all_hits_list = [sum(list(map(len, single_sim.iteration_hits))) for single_sim in all_single_sims]
+    n_all_hits_list = [
+        sum(list(map(len, single_sim.iteration_hits))) for single_sim in all_single_sims
+    ]
     total_hits_mean = round(float(np.mean(n_all_hits_list)), 3)
     total_hits_std = float(np.std(n_all_hits_list))
     return total_hits_mean, total_hits_std
@@ -317,9 +358,12 @@ def _extract_average_hits_per_campaign(exps: List[DashboardExperimentData]) -> T
 
 def _render_inner_simulation_comparison(subset: List[DashboardExperimentData]) -> None:
     st.header("Comparison")
-    mode = st.radio("Compare by", ["Surrogate Model", "Embedder"],
-                    key="InnerSimulationRadio",
-                    horizontal=True)
+    mode = st.radio(
+        "Compare by",
+        ["Surrogate Model", "Embedder"],
+        key="InnerSimulationRadio",
+        horizontal=True,
+    )
 
     group_by = "model" if mode == "Surrogate Model" else "embedder"
 
@@ -358,18 +402,26 @@ def _render_inner_simulation_comparison(subset: List[DashboardExperimentData]) -
 
         avg_conv = np.mean(conv_speeds) if conv_speeds else None
         avg_hits, _ = _extract_average_hits_per_campaign(exps)
-        comparison_data.append({
-            mode: key,
-            "Total Hits": all_hits,
-            "Unique Hits": len(all_unique_hits),
-            "Unique Hits Std. Dev.": f"{unique_hits_std:.2f}",
-            "Number of Campaigns": total_campaigns,
-            "Total Suggestions": all_suggestions,
-            "Hit Rate": f"{all_hits / all_suggestions:.2%}" if all_suggestions > 0 else "0%",
-            "Avg. Hits per Campaign": f"{avg_hits:.2f}",
-            "Percentage of successful campaigns": f"{sum(all_is_success) / total_campaigns:.1%}" if total_campaigns > 0 else "0.0%",
-            "Avg. Convergence Iteration": f"{avg_conv:.2f}" if avg_conv is not None else "N/A"
-        })
+        comparison_data.append(
+            {
+                mode: key,
+                "Total Hits": all_hits,
+                "Unique Hits": len(all_unique_hits),
+                "Unique Hits Std. Dev.": f"{unique_hits_std:.2f}",
+                "Number of Campaigns": total_campaigns,
+                "Total Suggestions": all_suggestions,
+                "Hit Rate": f"{all_hits / all_suggestions:.2%}"
+                if all_suggestions > 0
+                else "0%",
+                "Avg. Hits per Campaign": f"{avg_hits:.2f}",
+                "Percentage of successful campaigns": f"{sum(all_is_success) / total_campaigns:.1%}"
+                if total_campaigns > 0
+                else "0.0%",
+                "Avg. Convergence Iteration": f"{avg_conv:.2f}"
+                if avg_conv is not None
+                else "N/A",
+            }
+        )
 
     if group_by == "embedder":
         st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
@@ -386,12 +438,16 @@ def _render_inner_simulation_comparison(subset: List[DashboardExperimentData]) -
 
     st.subheader("Cumulative target successes — mean per experiment")
     st.altair_chart(
-        al_plots.build_cross_experiment_cumulative_chart(cross_cum_inputs, cross_targets).interactive(),
+        al_plots.build_cross_experiment_cumulative_chart(
+            cross_cum_inputs, cross_targets
+        ).interactive(),
         use_container_width=True,
     )
     st.subheader(f"Model performance ({metric_name}) — mean per experiment")
     st.altair_chart(
-        al_plots.build_cross_experiment_metric_chart(cross_metric_inputs, metric_name).interactive(),
+        al_plots.build_cross_experiment_metric_chart(
+            cross_metric_inputs, metric_name
+        ).interactive(),
         use_container_width=True,
     )
 
@@ -406,7 +462,9 @@ def _render_header(exp: DashboardExperimentData) -> None:
 
     cols_row2 = st.columns(3)
     cols_row2[0].metric("Sims", summary["n_simulations"])
-    cols_row2[1].metric("Successful", f"{summary['n_successful']}/{summary['n_simulations']}")
+    cols_row2[1].metric(
+        "Successful", f"{summary['n_successful']}/{summary['n_simulations']}"
+    )
     cols_row2[2].metric("Target threshold", summary["n_hits_threshold"])
     if summary.get("discrete_targets"):
         st.caption(f"Discrete targets: {', '.join(summary['discrete_targets'])}")
@@ -415,54 +473,65 @@ def _render_header(exp: DashboardExperimentData) -> None:
 def _render_dataset_tab(selected_dataset: str, base_config, exps):
     potential_hits = set(exps[0].potential_hits)
     n_potential_hits = len(potential_hits)
-    n_potential_hits_percent = round(100 * n_potential_hits / len(base_config.simulation_data), 2)
-    st.metric(f"**Number of potential hits:**", value=f"{n_potential_hits} ({n_potential_hits_percent} %)",
-              help="Total number of potential hits in the dataset given the campaign configuration.")
+    n_potential_hits_percent = round(
+        100 * n_potential_hits / len(base_config.simulation_data), 2
+    )
+    st.metric(
+        f"**Number of potential hits:**",
+        value=f"{n_potential_hits} ({n_potential_hits_percent} %)",
+        help="Total number of potential hits in the dataset given the campaign configuration.",
+    )
     dataset_sequences = _load_dataset_sequences(selected_dataset)
     df = pd.DataFrame([seq.model_dump() for seq in dataset_sequences])
 
     # Convert label to float if possible
-    if 'label' in df.columns:
+    if "label" in df.columns:
+
         def try_float_conversion(val):
             try:
                 return float(val)
             except (ValueError, TypeError):
                 return val
 
-        df['label'] = df['label'].apply(try_float_conversion)
+        df["label"] = df["label"].apply(try_float_conversion)
 
-    df = df.drop(columns=['attributes', 'embedding', 'mask', 'set'], errors='ignore')
+    df = df.drop(columns=["attributes", "embedding", "mask", "set"], errors="ignore")
 
-    st.markdown(f"**Simulation Data**",
-                help="Dataframe of the simulation dataset (highlighted rows are potential hits).")
+    st.markdown(
+        f"**Simulation Data**",
+        help="Dataframe of the simulation dataset (highlighted rows are potential hits).",
+    )
 
     def highlight_potential_hits(row):
-        if row['seq_id'] in potential_hits:
-            return ['background-color: #90EE90'] * len(row)
-        return [''] * len(row)
+        if row["seq_id"] in potential_hits:
+            return ["background-color: #90EE90"] * len(row)
+        return [""] * len(row)
 
     st.dataframe(df.style.apply(highlight_potential_hits, axis=1))
-    
+
     # Label distribution Chart
     biotrainer_chart = BiocentralChart.label_distribution(dataset_sequences)
-    st.markdown(f"**Dataset Label Distribution**",
-                help="Distribution of all labels in the dataset.")
+    st.markdown(
+        f"**Dataset Label Distribution**",
+        help="Distribution of all labels in the dataset.",
+    )
     chart = biotrainer_chart.chart
 
-    chart = chart.properties(width=1200, height=800).configure_axis(
-        labelFontSize=20,
-        titleFontSize=28
-    ).configure_axisX(
-        labelAngle=-45,
-        labelLimit=0,
-        labelOverlap=False
-    ).configure_legend(
-        labelFontSize=24, titleFontSize=24).configure_title(fontSize=24)
+    chart = (
+        chart.properties(width=1200, height=800)
+        .configure_axis(labelFontSize=20, titleFontSize=28)
+        .configure_axisX(labelAngle=-45, labelLimit=0, labelOverlap=False)
+        .configure_legend(labelFontSize=24, titleFontSize=24)
+        .configure_title(fontSize=24)
+    )
     st.altair_chart(chart, use_container_width=True)
 
 
-def _extract_cross_dataset_data(group_by: str, ds_groups: Dict[str, List[DashboardExperimentData]],
-                                dict_constructor: Callable):
+def _extract_cross_dataset_data(
+    group_by: str,
+    ds_groups: Dict[str, List[DashboardExperimentData]],
+    dict_constructor: Callable,
+):
     cross_dataset_data = {}  # ds_name -> n unique hits
     all_groupable = {}  # Model Name / Embedder Name -> Experiments
 
@@ -497,20 +566,19 @@ def _plot_cross_dataset_data(cross_dataset_data: Dict, value_name: str):
             metric_key = [k for k in values.keys() if k != "std"][0]
             mean_value = values[metric_key]
             std_value = values["std"]
-            plot_data.append({
-                "category": key,
-                "value": mean_value,
-                "lower": max(0, mean_value - std_value),
-                "upper": mean_value + std_value,
-                "std_value": std_value,
-            })
+            plot_data.append(
+                {
+                    "category": key,
+                    "value": mean_value,
+                    "lower": max(0, mean_value - std_value),
+                    "upper": mean_value + std_value,
+                    "std_value": std_value,
+                }
+            )
         else:
-            plot_data.append({
-                "category": key,
-                "value": values,
-                "lower": values,
-                "upper": values
-            })
+            plot_data.append(
+                {"category": key, "value": values, "lower": values, "upper": values}
+            )
 
     # Create DataFrame for the chart
     df = pd.DataFrame(plot_data)
@@ -518,100 +586,133 @@ def _plot_cross_dataset_data(cross_dataset_data: Dict, value_name: str):
     category_sort = df["category"].tolist()
 
     # Create bar chart with error bars
-    bars = alt.Chart(df).mark_bar(
-        size=100,
-        filled=True,
-    ).encode(
-        x=alt.X('category:N', title=None, axis=alt.Axis(labelAngle=-45), sort=category_sort),
-        y=alt.Y('value:Q', title=value_name),
-        color=alt.Color('category:N',
-                        scale=alt.Scale(scheme='tableau10'),
-                        legend=None),
-        tooltip=[
-            alt.Tooltip('category:N', title='Category'),
-            alt.Tooltip('value:Q', title=value_name, format='.2f'),
-            alt.Tooltip('std_value:Q', title='Std Dev', format='.2f')
-        ]
+    bars = (
+        alt.Chart(df)
+        .mark_bar(
+            size=100,
+            filled=True,
+        )
+        .encode(
+            x=alt.X(
+                "category:N",
+                title=None,
+                axis=alt.Axis(labelAngle=-45),
+                sort=category_sort,
+            ),
+            y=alt.Y("value:Q", title=value_name),
+            color=alt.Color(
+                "category:N", scale=alt.Scale(scheme="tableau10"), legend=None
+            ),
+            tooltip=[
+                alt.Tooltip("category:N", title="Category"),
+                alt.Tooltip("value:Q", title=value_name, format=".2f"),
+                alt.Tooltip("std_value:Q", title="Std Dev", format=".2f"),
+            ],
+        )
     )
 
     # Create error bars
-    error_bars = alt.Chart(df).mark_errorbar(
-        color='black'
-    ).encode(
-        y=alt.Y('lower:Q', title=value_name),
-        y2=alt.Y2('upper:Q', title=None),
-        x=alt.X('category:N', sort=category_sort),
+    error_bars = (
+        alt.Chart(df)
+        .mark_errorbar(color="black")
+        .encode(
+            y=alt.Y("lower:Q", title=value_name),
+            y2=alt.Y2("upper:Q", title=None),
+            x=alt.X("category:N", sort=category_sort),
+        )
     )
 
-    chart = (bars + error_bars)
+    chart = bars + error_bars
 
-    chart = chart.properties(width=1200, height=800).configure_axis(
-        labelFontSize=20,
-        titleFontSize=28
-    ).configure_axisX(
-        labelAngle=-45,
-        labelLimit=0,
-        labelOverlap=False
-    ).configure_legend(
-        labelFontSize=24, titleFontSize=24).configure_title(fontSize=24)
+    chart = (
+        chart.properties(width=1200, height=800)
+        .configure_axis(labelFontSize=20, titleFontSize=28)
+        .configure_axisX(labelAngle=-45, labelLimit=0, labelOverlap=False)
+        .configure_legend(labelFontSize=24, titleFontSize=24)
+        .configure_title(fontSize=24)
+    )
 
     st.altair_chart(chart, use_container_width=True)
 
 
-def _render_cross_dataset_comparison(ds_groups: Dict[str, List[DashboardExperimentData]]):
+def _render_cross_dataset_comparison(
+    ds_groups: Dict[str, List[DashboardExperimentData]],
+):
     st.markdown("## Cross-dataset comparison")
-    mode = st.radio("Compare by", ["Surrogate Model", "Embedder", "Dataset"],
-                    key="CrossDatasetRadio", horizontal=True)
+    mode = st.radio(
+        "Compare by",
+        ["Surrogate Model", "Embedder", "Dataset"],
+        key="CrossDatasetRadio",
+        horizontal=True,
+    )
 
     group_by = "model" if mode == "Surrogate Model" else mode.lower()
 
     ### AVERAGE
     def average_dict_constructor(exps):
         average_hits, average_hits_std = _extract_average_hits_per_campaign(exps)
-        return {
-            "average_hits_per_campaign": average_hits,
-            "std": average_hits_std
-        }
+        return {"average_hits_per_campaign": average_hits, "std": average_hits_std}
 
-    cross_dataset_data_average = _extract_cross_dataset_data(group_by, ds_groups, average_dict_constructor)
+    cross_dataset_data_average = _extract_cross_dataset_data(
+        group_by, ds_groups, average_dict_constructor
+    )
 
     match group_by:
         case "model":
-            st.markdown("**Average hits found by each surrogate model across all datasets:**",
-                        help="Measure of power of different surrogate models.")
-            st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
+            st.markdown(
+                "**Average hits found by each surrogate model across all datasets:**",
+                help="Measure of power of different surrogate models.",
+            )
+            st.markdown(
+                "*Note: Random surrogate models are excluded from the comparison.*"
+            )
         case "embedder":
-            st.markdown("**Average hits found by each embedder model across all datasets:**",
-                        help="Measure of power of different embedder models.")
-            st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
+            st.markdown(
+                "**Average hits found by each embedder model across all datasets:**",
+                help="Measure of power of different embedder models.",
+            )
+            st.markdown(
+                "*Note: Random surrogate models are excluded from the comparison.*"
+            )
         case "dataset":
-            st.markdown("**Average hits found in each dataset across all models and embedders:**",
-                        help="Measure of difficulty of the dataset for active learning simulations.")
+            st.markdown(
+                "**Average hits found in each dataset across all models and embedders:**",
+                help="Measure of difficulty of the dataset for active learning simulations.",
+            )
 
     _plot_cross_dataset_data(cross_dataset_data_average, "Average Hits")
 
     ### UNIQUE
     def unique_dict_constructor(exps):
         unique_hits, n_iteration_hits_std = _extract_unique_hits(exps)
-        return {
-            "unique_hits": len(unique_hits),
-            "std": n_iteration_hits_std
-        }
+        return {"unique_hits": len(unique_hits), "std": n_iteration_hits_std}
 
-    cross_dataset_data_unique = _extract_cross_dataset_data(group_by, ds_groups, unique_dict_constructor)
+    cross_dataset_data_unique = _extract_cross_dataset_data(
+        group_by, ds_groups, unique_dict_constructor
+    )
 
     match group_by:
         case "model":
-            st.markdown("**Unique hits found by each surrogate model across all datasets:**",
-                        help="Measure of diversity of hits covered by different surrogate models.")
-            st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
+            st.markdown(
+                "**Unique hits found by each surrogate model across all datasets:**",
+                help="Measure of diversity of hits covered by different surrogate models.",
+            )
+            st.markdown(
+                "*Note: Random surrogate models are excluded from the comparison.*"
+            )
         case "embedder":
-            st.markdown("**Unique hits found by each embedder model across all datasets:**",
-                        help="Measure of diversity of hits covered by different embedder models.")
-            st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
+            st.markdown(
+                "**Unique hits found by each embedder model across all datasets:**",
+                help="Measure of diversity of hits covered by different embedder models.",
+            )
+            st.markdown(
+                "*Note: Random surrogate models are excluded from the comparison.*"
+            )
         case "dataset":
-            st.markdown("**Unique hits found in each dataset across all models and embedders:**",
-                        help="Measure of difficulty of the dataset for active learning simulations.")
+            st.markdown(
+                "**Unique hits found in each dataset across all models and embedders:**",
+                help="Measure of difficulty of the dataset for active learning simulations.",
+            )
 
     _plot_cross_dataset_data(cross_dataset_data_unique, "Unique Hits")
 
@@ -632,10 +733,14 @@ def main():
     if len(all_compressed_data) > 0:
         st.sidebar.success("Loaded all results.")
     else:
-        st.error(f"Compressed data files not found at `{RESULTS_DIR}`. Please run `compress_reports.py` first.")
+        st.error(
+            f"Compressed data files not found at `{RESULTS_DIR}`. Please run `compress_reports.py` first."
+        )
         st.stop()
 
-    selected_run = st.sidebar.selectbox("Select Run", sorted(all_compressed_data.keys()))
+    selected_run = st.sidebar.selectbox(
+        "Select Run", sorted(all_compressed_data.keys())
+    )
 
     compressed_data = all_compressed_data[selected_run]
 
@@ -660,7 +765,8 @@ def main():
     with st.sidebar.expander("Base Configuration", expanded=True):
         st.markdown(
             f"**Optimization Mode:** {base_config.optimization_mode.value}",
-            help=f"The goal of this simulation: {base_config.explain_optimization_mode()}")
+            help=f"The goal of this simulation: {base_config.explain_optimization_mode()}",
+        )
 
         if base_config.target_lb is not None:
             st.markdown(f"**Target Lower Bound:** {base_config.target_lb}")
@@ -669,43 +775,72 @@ def main():
         if base_config.target_value is not None:
             st.markdown(f"**Target Value:** {base_config.target_value}")
         if base_config.discrete_targets:
-            st.markdown(f"**Discrete Targets:** {', '.join(base_config.discrete_targets)}")
+            st.markdown(
+                f"**Discrete Targets:** {', '.join(base_config.discrete_targets)}"
+            )
 
         n_sim_data = len(base_config.simulation_data)
-        st.markdown(f"**Total Sequences:** {n_sim_data}",
-                    help="Total number of sequences in the simulation dataset.")
+        st.markdown(
+            f"**Total Sequences:** {n_sim_data}",
+            help="Total number of sequences in the simulation dataset.",
+        )
         potential_hits = exps[0].potential_hits
         n_potential_hits = len(potential_hits)
         n_potential_hits_percent = round(100 * n_potential_hits / n_sim_data, 2)
-        st.markdown(f"**Number of potential hits:** {n_potential_hits} ({n_potential_hits_percent} %)",
-                    help="Total number of potential hits in the dataset given the campaign configuration.")
+        st.markdown(
+            f"**Number of potential hits:** {n_potential_hits} ({n_potential_hits_percent} %)",
+            help="Total number of potential hits in the dataset given the campaign configuration.",
+        )
 
     with st.sidebar.expander("Simulation Configuration", expanded=True):
         if simulation_config.n_start is not None:
-            st.markdown(f"**Initial Training Sequences:** {simulation_config.n_start}",
-                        help="These sequences are chosen at random from the total sequences (using the simulation seed).")
+            st.markdown(
+                f"**Initial Training Sequences:** {simulation_config.n_start}",
+                help="These sequences are chosen at random from the total sequences (using the simulation seed).",
+            )
         if simulation_config.start_ids is not None:
-            st.markdown(f"**Start IDs Count:** {len(simulation_config.start_ids)}",
-                        help="These sequences and their labels are used to start the simulation.")
+            st.markdown(
+                f"**Start IDs Count:** {len(simulation_config.start_ids)}",
+                help="These sequences and their labels are used to start the simulation.",
+            )
 
-        st.markdown(f"**Suggestions per Iteration:** {simulation_config.n_suggestions_per_iteration}",
-                    help="Number of suggestions selected per iteration of each campaign.")
+        st.markdown(
+            f"**Suggestions per Iteration:** {simulation_config.n_suggestions_per_iteration}",
+            help="Number of suggestions selected per iteration of each campaign.",
+        )
 
         stop_cfg = simulation_config.stopping_config
-        st.markdown("**Stopping Criteria:**", help="Determines when the simulated campaign should stop.")
-        if hasattr(stop_cfg, 'n_hits') and stop_cfg.n_hits is not None:
-            st.markdown(f"  - Number of Hits: {stop_cfg.n_hits}",
-                        help="Stops the campaign when this number of targets (hits) is found.")
-        if hasattr(stop_cfg, 'n_max_iterations') and stop_cfg.n_max_iterations is not None:
-            st.markdown(f"  - Max Iterations: {stop_cfg.n_max_iterations}",
-                        help="Always stops the campaign after this number of iterations.")
-        if hasattr(stop_cfg, 'max_consecutive_failures') and stop_cfg.max_consecutive_failures is not None:
-            st.markdown(f"  - Max Consecutive Failures: {stop_cfg.max_consecutive_failures}",
-                        help="Stops the campaign after this number of consecutive failures (no hits found in an iteration).")
+        st.markdown(
+            "**Stopping Criteria:**",
+            help="Determines when the simulated campaign should stop.",
+        )
+        if hasattr(stop_cfg, "n_hits") and stop_cfg.n_hits is not None:
+            st.markdown(
+                f"  - Number of Hits: {stop_cfg.n_hits}",
+                help="Stops the campaign when this number of targets (hits) is found.",
+            )
+        if (
+            hasattr(stop_cfg, "n_max_iterations")
+            and stop_cfg.n_max_iterations is not None
+        ):
+            st.markdown(
+                f"  - Max Iterations: {stop_cfg.n_max_iterations}",
+                help="Always stops the campaign after this number of iterations.",
+            )
+        if (
+            hasattr(stop_cfg, "max_consecutive_failures")
+            and stop_cfg.max_consecutive_failures is not None
+        ):
+            st.markdown(
+                f"  - Max Consecutive Failures: {stop_cfg.max_consecutive_failures}",
+                help="Stops the campaign after this number of consecutive failures (no hits found in an iteration).",
+            )
 
     subset = ds_groups[selected_dataset]
 
-    main_tabs = st.tabs(["Individual Simulation Result", "Comparison", "Dataset Statistics"])
+    main_tabs = st.tabs(
+        ["Individual Simulation Result", "Comparison", "Dataset Statistics"]
+    )
 
     with main_tabs[0]:  # Individual simulation result
         exp_names = {e.name: e for e in subset}

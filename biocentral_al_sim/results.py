@@ -49,7 +49,12 @@ class ActiveLearningSingleSimulationResult:
         self.commits = commits
 
     def get_total_number_of_suggestions(self):
-        return sum([len(it_res.suggestions) for it_res in self.simulation_result.iteration_results])
+        return sum(
+            [
+                len(it_res.suggestions)
+                for it_res in self.simulation_result.iteration_results
+            ]
+        )
 
     def model_dump_json(self):
         """Serialize to JSON string"""
@@ -102,7 +107,10 @@ class ActiveLearningSingleSimulationResult:
         required_n_hits = self.al_simulation_config.stopping_config.n_hits
         if required_n_hits is None:
             return False  # No hit threshold to measure success against
-        return sum(map(len, self.simulation_result.iteration_hits or [])) >= required_n_hits
+        return (
+            sum(map(len, self.simulation_result.iteration_hits or []))
+            >= required_n_hits
+        )
 
     def n_hits_found(self) -> int:
         return sum(map(len, self.simulation_result.iteration_hits or []))
@@ -132,13 +140,26 @@ class ActiveLearningSingleSimulationResult:
         print(f"Simulation campaign stats:")
         print(f"Simulation stop reasons: {result.stop_reasons}")
         print(f"Total number of iterations: {len(result.iteration_results or [])}")
-        print(f"Metrics for all masked data points per iteration: {result.iteration_metrics_total}")
-        print(f"Metrics for suggested data points per iteration: {result.iteration_metrics_suggestions}")
-        print(f"Number of hits over iterations: {list(map(len, result.iteration_hits or []))}")
-        filtered_results_suggestions = [next((sugg for sugg in res.results if sugg.entity_id in res.suggestions), None)
-                                        for res in result.iteration_results or []]
+        print(
+            f"Metrics for all masked data points per iteration: {result.iteration_metrics_total}"
+        )
+        print(
+            f"Metrics for suggested data points per iteration: {result.iteration_metrics_suggestions}"
+        )
+        print(
+            f"Number of hits over iterations: {list(map(len, result.iteration_hits or []))}"
+        )
+        filtered_results_suggestions = [
+            next(
+                (sugg for sugg in res.results if sugg.entity_id in res.suggestions),
+                None,
+            )
+            for res in result.iteration_results or []
+        ]
         if any(sugg is not None for sugg in filtered_results_suggestions):
-            print(f"Iteration result for top suggestion: {filtered_results_suggestions}")
+            print(
+                f"Iteration result for top suggestion: {filtered_results_suggestions}"
+            )
 
     def _compose_layout(self, charts: dict) -> alt.VConcatChart:
         top = alt.hconcat(charts["metric_evolution"], charts["n_hits"])
@@ -163,8 +184,11 @@ class ActiveLearningSingleSimulationResult:
 
     def label(self) -> str:
         seed = self.al_campaign_config.seed
-        model_type = getattr(self.al_campaign_config.model_type, "value",
-                             self.al_campaign_config.model_type)
+        model_type = getattr(
+            self.al_campaign_config.model_type,
+            "value",
+            self.al_campaign_config.model_type,
+        )
         return f"seed={seed} | {model_type} | success={self.is_success()}"
 
     def build_altair_charts(self):
@@ -176,7 +200,10 @@ class ActiveLearningSingleSimulationResult:
         from . import plots as al_plots
 
         result = self.simulation_result
-        is_discrete = self.al_campaign_config.optimization_mode == ActiveLearningOptimizationMode.DISCRETE
+        is_discrete = (
+            self.al_campaign_config.optimization_mode
+            == ActiveLearningOptimizationMode.DISCRETE
+        )
         metric_name = "Accuracy" if is_discrete else "MAE"
 
         n_rounds_candidates = [
@@ -188,11 +215,17 @@ class ActiveLearningSingleSimulationResult:
         ]
         n_rounds = max(n_rounds_candidates) if any(n_rounds_candidates) else 0
 
-        iteration_metrics_total = [m.mean for m in (result.iteration_metrics_total or [])[:n_rounds]]
-        iteration_metrics_suggestions = [m.mean for m in (result.iteration_metrics_suggestions or [])[:n_rounds]]
+        iteration_metrics_total = [
+            m.mean for m in (result.iteration_metrics_total or [])[:n_rounds]
+        ]
+        iteration_metrics_suggestions = [
+            m.mean for m in (result.iteration_metrics_suggestions or [])[:n_rounds]
+        ]
         iteration_hits = (result.iteration_hits or [])[:n_rounds]
         n_iteration_hits = list(map(len, iteration_hits))
-        iteration_consecutive_failures = (result.iteration_consecutive_failures or [])[:n_rounds]
+        iteration_consecutive_failures = (result.iteration_consecutive_failures or [])[
+            :n_rounds
+        ]
         iteration_results = (result.iteration_results or [])[:n_rounds]
 
         charts = {
@@ -212,9 +245,13 @@ class ActiveLearningSingleSimulationResult:
         }
 
         if is_discrete:
-            id2label = {dp.seq_id: dp.label for dp in self.al_simulation_config.simulation_data}
+            id2label = {
+                dp.seq_id: dp.label for dp in self.al_simulation_config.simulation_data
+            }
             iteration_suggestions = [list(ir.suggestions) for ir in iteration_results]
-            unique_labels = sorted({dp.label for dp in self.al_simulation_config.simulation_data})
+            unique_labels = sorted(
+                {dp.label for dp in self.al_simulation_config.simulation_data}
+            )
             charts["suggested_labels"] = al_plots.build_suggested_labels_chart(
                 iteration_suggestions=iteration_suggestions,
                 id2label=id2label,
@@ -259,22 +296,36 @@ class ActiveLearningMultipleSimulationResult:
         results = self.simulation_results
         first_result = results[0]
         for result in results:
-            assert first_result.al_campaign_config.embedder_name == result.al_campaign_config.embedder_name, "Embedder config must be the same"
-            assert first_result.al_campaign_config.optimization_mode == result.al_campaign_config.optimization_mode, "Optimization mode must be the same"
-            assert first_result.al_simulation_config.stopping_config.n_hits == result.al_simulation_config.stopping_config.n_hits, "Simulation configs must be the same"
-            assert first_result.dataset_id == result.dataset_id, "Dataset ID must be the same"
+            assert (
+                first_result.al_campaign_config.embedder_name
+                == result.al_campaign_config.embedder_name
+            ), "Embedder config must be the same"
+            assert (
+                first_result.al_campaign_config.optimization_mode
+                == result.al_campaign_config.optimization_mode
+            ), "Optimization mode must be the same"
+            assert (
+                first_result.al_simulation_config.stopping_config.n_hits
+                == result.al_simulation_config.stopping_config.n_hits
+            ), "Simulation configs must be the same"
+            assert first_result.dataset_id == result.dataset_id, (
+                "Dataset ID must be the same"
+            )
             assert first_result.split_id == result.split_id, "Split ID must be the same"
             assert len(first_result.simulation_result.potential_hits) == len(
-                result.simulation_result.potential_hits), "Potential hits must be the same"
+                result.simulation_result.potential_hits
+            ), "Potential hits must be the same"
 
     @classmethod
     def from_json(cls, path: Path) -> ActiveLearningMultipleSimulationResult:
         """Load simulation results from JSON file"""
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             json_results = json.load(f)
             # Convert dict to JSON string first, then validate
             results = [
-                ActiveLearningSingleSimulationResult.model_validate_json(json.dumps(res))
+                ActiveLearningSingleSimulationResult.model_validate_json(
+                    json.dumps(res)
+                )
                 for res in json_results
             ]
             return cls(results)
@@ -295,28 +346,46 @@ class ActiveLearningMultipleSimulationResult:
         return self.simulation_results[0].simulation_result.potential_hits
 
     def get_best_simulation(self):
-        return max(self.simulation_results,
-                   key=lambda ssr: list(map(len, ssr.simulation_result.iteration_hits)))
+        return max(
+            self.simulation_results,
+            key=lambda ssr: list(map(len, ssr.simulation_result.iteration_hits)),
+        )
 
     def get_worst_simulation(self):
-        return min(self.simulation_results,
-                   key=lambda ssr: list(map(len, ssr.simulation_result.iteration_hits)))
+        return min(
+            self.simulation_results,
+            key=lambda ssr: list(map(len, ssr.simulation_result.iteration_hits)),
+        )
 
     def get_aggregated_hits(self):
-        return sum([sum(list(map(len, ssr.simulation_result.iteration_hits or []))) for ssr in self.simulation_results])
+        return sum(
+            [
+                sum(list(map(len, ssr.simulation_result.iteration_hits or [])))
+                for ssr in self.simulation_results
+            ]
+        )
 
     def __get_aggreged_unique_hits(self):
         raise NotImplementedError  # TODO Needs to use the simulation dataset
 
     def get_aggregated_number_of_suggestions(self):
-        return sum([ssr.get_total_number_of_suggestions() for ssr in self.simulation_results])
+        return sum(
+            [ssr.get_total_number_of_suggestions() for ssr in self.simulation_results]
+        )
 
     def _percent_successful(self):
-        return sum([1 for ssr in self.simulation_results if ssr.is_success()]) / len(self.simulation_results) * 100
+        return (
+            sum([1 for ssr in self.simulation_results if ssr.is_success()])
+            / len(self.simulation_results)
+            * 100
+        )
 
     def mean_hit_rate(self) -> Optional[float]:
-        rates = [rate for rate in (ssr.hit_rate() for ssr in self.simulation_results)
-                 if rate is not None]
+        rates = [
+            rate
+            for rate in (ssr.hit_rate() for ssr in self.simulation_results)
+            if rate is not None
+        ]
         return sum(rates) / len(rates) if rates else None
 
     def print_stats(self):
@@ -325,8 +394,10 @@ class ActiveLearningMultipleSimulationResult:
         measured = [ssr.n_measured() for ssr in self.simulation_results]
         hits = [ssr.n_hits_found() for ssr in self.simulation_results]
         rate = self.mean_hit_rate()
-        print(f"Mean hits: {sum(hits) / len(hits):.1f} of {sum(measured) / len(measured):.0f} "
-              f"measured | mean hit rate: {'n/a' if rate is None else f'{rate:.2%}'}")
+        print(
+            f"Mean hits: {sum(hits) / len(hits):.1f} of {sum(measured) / len(measured):.0f} "
+            f"measured | mean hit rate: {'n/a' if rate is None else f'{rate:.2%}'}"
+        )
 
     def _compose_layout(self, charts: dict) -> alt.HConcatChart:
         return alt.hconcat(
@@ -366,8 +437,10 @@ class ActiveLearningMultipleSimulationResult:
         """
         from . import plots as al_plots
 
-        is_discrete = self.simulation_results[
-                          0].al_campaign_config.optimization_mode == ActiveLearningOptimizationMode.DISCRETE
+        is_discrete = (
+            self.simulation_results[0].al_campaign_config.optimization_mode
+            == ActiveLearningOptimizationMode.DISCRETE
+        )
         metric_name = "Accuracy" if is_discrete else "MAE"
 
         per_sim_n_hits = [
@@ -380,8 +453,11 @@ class ActiveLearningMultipleSimulationResult:
         ]
         per_sim_is_success = [ssr.is_success() for ssr in self.simulation_results]
 
-        n_hits_threshold = self.simulation_results[0].al_simulation_config.stopping_config.n_hits or int(
-            np.inf)  # No threshold if it was None
+        n_hits_threshold = self.simulation_results[
+            0
+        ].al_simulation_config.stopping_config.n_hits or int(
+            np.inf
+        )  # No threshold if it was None
         max_iterations = max((len(m) for m in per_sim_metrics_total), default=0)
         success_count = sum(1 for s in per_sim_is_success if s)
 
@@ -407,8 +483,13 @@ class ActiveLearningMultipleSimulationResult:
             ),
             "mean_metric_evolution": al_plots.build_mean_metric_evolution_chart(
                 per_sim_metrics_total=per_sim_metrics_total,
-                best_run_metrics=[m.mean for m in best.simulation_result.iteration_metrics_total or []],
-                worst_run_metrics=[m.mean for m in worst.simulation_result.iteration_metrics_total or []],
+                best_run_metrics=[
+                    m.mean for m in best.simulation_result.iteration_metrics_total or []
+                ],
+                worst_run_metrics=[
+                    m.mean
+                    for m in worst.simulation_result.iteration_metrics_total or []
+                ],
                 metric_name=metric_name,
             ),
         }
@@ -452,11 +533,14 @@ class ActiveLearningMultipleSimulationResult:
             result_dict = json.loads(result.model_dump_json())
 
             # Remove simulation_data from al_simulation_config to reduce file size
-            if 'al_simulation_config' in result_dict and 'simulation_data' in result_dict['al_simulation_config']:
-                result_dict['al_simulation_config']['simulation_data'] = [
+            if (
+                "al_simulation_config" in result_dict
+                and "simulation_data" in result_dict["al_simulation_config"]
+            ):
+                result_dict["al_simulation_config"]["simulation_data"] = [
                     SequenceData(seq_id="Dummy1", seq="MDUMMY").model_dump(),
                     SequenceData(seq_id="Dummy2", seq="ADUMMY").model_dump(),
-                    SequenceData(seq_id="Dummy3", seq="GDUMMY").model_dump()
+                    SequenceData(seq_id="Dummy3", seq="GDUMMY").model_dump(),
                 ]
 
             json_results.append(result_dict)

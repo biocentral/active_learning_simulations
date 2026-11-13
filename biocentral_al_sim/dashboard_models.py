@@ -9,21 +9,37 @@ from .splits import ALSimulatorSplit
 
 
 class DashboardSingleSimulationData(BaseModel):
-    label: str = Field(..., description="Label identifying the simulation with seed, model type, and success status")
-    is_success: bool = Field(...,
-                             description="Whether the simulation met the success criteria (e.g. reached target hits)")
+    label: str = Field(
+        ...,
+        description="Label identifying the simulation with seed, model type, and success status",
+    )
+    is_success: bool = Field(
+        ...,
+        description="Whether the simulation met the success criteria (e.g. reached target hits)",
+    )
     seed: int = Field(..., description="Random seed used for this simulation run")
-    stop_reasons: List[str] = Field(...,
-                                    description="Reasons why the simulation stopped (e.g., budget exhausted, convergence reached)")
-    iteration_metrics_total: List[float] = Field(...,
-                                                 description="Mean metric values for all masked data points per iteration")
-    iteration_metrics_suggestions: List[float] = Field(...,
-                                                       description="Mean metric values for suggested data points per iteration")
-    iteration_hits: List[List[str]] = Field(..., description="Hits found in each iteration")
-    iteration_consecutive_failures: List[int] = Field(...,
-                                                      description="Count of consecutive failures in each iteration")
-    iteration_results_count: int = Field(..., description="Total number of iteration results in the simulation")
-    n_hits_threshold: int = Field(..., description="Target number of successful hits required for convergence")
+    stop_reasons: List[str] = Field(
+        ...,
+        description="Reasons why the simulation stopped (e.g., budget exhausted, convergence reached)",
+    )
+    iteration_metrics_total: List[float] = Field(
+        ..., description="Mean metric values for all masked data points per iteration"
+    )
+    iteration_metrics_suggestions: List[float] = Field(
+        ..., description="Mean metric values for suggested data points per iteration"
+    )
+    iteration_hits: List[List[str]] = Field(
+        ..., description="Hits found in each iteration"
+    )
+    iteration_consecutive_failures: List[int] = Field(
+        ..., description="Count of consecutive failures in each iteration"
+    )
+    iteration_results_count: int = Field(
+        ..., description="Total number of iteration results in the simulation"
+    )
+    n_hits_threshold: int = Field(
+        ..., description="Target number of successful hits required for convergence"
+    )
 
 
 class DashboardExperimentData(BaseModel):

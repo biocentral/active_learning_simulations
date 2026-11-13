@@ -1091,5 +1091,6 @@ class ALSimulatorSplit(Enum):
 _SPLIT_DEFINITIONS: Dict[str, ALSimulatorSplitDefinition] = {
     ALSimulatorSplit.FULL_POOL.name: ALSimulatorSplitDefinition(
         description="No restriction: the campaign may start anywhere in the pool.",
-        strategy=None),
+        strategy=None,
+    ),
 }

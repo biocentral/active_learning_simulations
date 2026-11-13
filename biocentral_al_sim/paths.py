@@ -2,6 +2,7 @@
 
 Bump RUN_VERSION to the start date of a new run generation to give it fresh directories.
 """
+
 from pathlib import Path
 
 RUN_VERSION = "2026-11-05"

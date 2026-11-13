@@ -19,7 +19,9 @@ class CampaignSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    short_name: str = Field(description="Tag identifying the regime, used in file names")
+    short_name: str = Field(
+        description="Tag identifying the regime, used in file names"
+    )
     n_start: int = Field(description="Starting set size, including wildtype / parent")
     n_suggestions_per_iteration: int = Field(description="Variants measured per round")
     n_iterations: int = Field(default=8, description="Rounds a campaign is allowed")
@@ -31,17 +33,20 @@ class CampaignSettings(BaseModel):
     redraw_start_set: bool = Field(
         default=True,
         description="Draw a fresh starting set per replicate. False shares one across all "
-                    "replicates, so they vary only in model stochasticity.")
+        "replicates, so they vary only in model stochasticity.",
+    )
     # Stopping criteria. `n_iterations` always applies; these two are opt-in, so by default
     # a campaign spends its whole budget and the hit rate covers the full 8 rounds. The
     # server requires at least one of budget / hits / failed-rounds, which the derived
     # `max_labels_budget` always satisfies.
     stop_at_n_hits: Optional[int] = Field(
         default=None,
-        description="Stop once this many hits are found. Spends full budget if set to None.")
+        description="Stop once this many hits are found. Spends full budget if set to None.",
+    )
     stop_after_failed_rounds: Optional[int] = Field(
         default=None,
-        description="Stop after this many consecutive rounds without a hit.")
+        description="Stop after this many consecutive rounds without a hit.",
+    )
 
     @property
     def max_labels_budget(self) -> int:
@@ -50,7 +55,7 @@ class CampaignSettings(BaseModel):
 
     def fingerprint(self) -> str:
         """Hash fields without `n_replicates`
-        
+
         Replicate i always runs on seed `first_seed + i`, so runs
         differing only in their replicate count share the same result file.
         """
@@ -66,10 +71,12 @@ class EngineeringCampaignSettings(CampaignSettings):
     """
 
     n_candidates_per_iteration: int = Field(
-        default=1000, description="Unlabelled landscape variants scored per round")
+        default=1000, description="Unlabelled landscape variants scored per round"
+    )
     use_delta_embeddings: bool = Field(
         default=False,
-        description="Subtract the wildtype embedding from each variant's (PLM embedders only)")
+        description="Subtract the wildtype embedding from each variant's (PLM embedders only)",
+    )
     generate_candidates: bool = Field(
         default=False,
         description="Build each round's candidates by mutating the variants measured so far, "
@@ -81,9 +88,15 @@ class EngineeringCampaignSettings(CampaignSettings):
     )
 
 
-LOW_THROUGHPUT = CampaignSettings(short_name="low", n_start=10, n_suggestions_per_iteration=5)
-HIGH_THROUGHPUT = CampaignSettings(short_name="high", n_start=96, n_suggestions_per_iteration=48)
-THROUGHPUTS = {settings.short_name: settings for settings in (LOW_THROUGHPUT, HIGH_THROUGHPUT)}
+LOW_THROUGHPUT = CampaignSettings(
+    short_name="low", n_start=10, n_suggestions_per_iteration=5
+)
+HIGH_THROUGHPUT = CampaignSettings(
+    short_name="high", n_start=96, n_suggestions_per_iteration=48
+)
+THROUGHPUTS = {
+    settings.short_name: settings for settings in (LOW_THROUGHPUT, HIGH_THROUGHPUT)
+}
 
 # Default for callers that do not choose a regime
 CAMPAIGN_SETTINGS = LOW_THROUGHPUT

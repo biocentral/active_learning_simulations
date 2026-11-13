@@ -3,6 +3,7 @@ import pandas as pd
 from biotrainer_core.data_classes import SequenceData
 from biotrainer_core.input_files import read_FASTA, write_FASTA
 
+
 def read_labels(input_path: str):
     df = pd.read_csv(input_path)
     labels = {}
@@ -33,11 +34,15 @@ for seq_data in all_seqs:
     assert label is not None, f"Missing label for sequence {seq_id}"
     assert int(label) in [0, 1], f"Invalid label value for sequence {seq_id}: {label}"
     label_str = "EXOTOXIN" if int(label) == 1 else "NON-EXOTOXIN"
-    seq_data_updated = SequenceData(seq_id=seq_data.seq_id, seq=seq_data.seq, label=label_str)
+    seq_data_updated = SequenceData(
+        seq_id=seq_data.seq_id, seq=seq_data.seq, label=label_str
+    )
     all_seq_data_with_labels.append(seq_data_updated)
 
 assert len(all_seq_data_with_labels) == len(all_seqs)
 all_sequences = [seq_data.seq for seq_data in all_seq_data_with_labels]
-assert len(set(all_sequences)) == len(all_sequences), "Duplicate sequences found in the merged FASTA file"
+assert len(set(all_sequences)) == len(all_sequences), (
+    "Duplicate sequences found in the merged FASTA file"
+)
 
 write_FASTA("../exotox_merged.fasta", all_seq_data_with_labels)

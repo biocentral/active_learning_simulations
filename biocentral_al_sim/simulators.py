@@ -34,8 +34,9 @@ def get_simulator(
     simulation_data = read_FASTA(dataset_id.to_path())
     assert len(simulation_data) > 0, f"Simulation data for {dataset_id} is empty."
 
-    simulation_data, start_ids = _apply_split(dataset_id=dataset_id, split_id=split_id,
-                                              simulation_data=simulation_data)
+    simulation_data, start_ids = _apply_split(
+        dataset_id=dataset_id, split_id=split_id, simulation_data=simulation_data
+    )
 
     definition = dataset_id.definition()
     base_config = ActiveLearningFixedBaseConfig(
@@ -47,12 +48,16 @@ def get_simulator(
         target_lb=definition.target_lb,
         target_ub=definition.target_ub,
         target_value=definition.target_value,
-        discrete_targets=definition.discrete_targets)
+        discrete_targets=definition.discrete_targets,
+    )
     return ActiveLearningScreeningSimulator(al_base_config=base_config)
 
 
-def _apply_split(dataset_id: ALSimulatorDataset, split_id: ALSimulatorSplit,
-                 simulation_data: List[SequenceData]) -> tuple[List[SequenceData], Optional[List[str]]]:
+def _apply_split(
+    dataset_id: ALSimulatorDataset,
+    split_id: ALSimulatorSplit,
+    simulation_data: List[SequenceData],
+) -> tuple[List[SequenceData], Optional[List[str]]]:
     """Resolve a split into (pool, start_ids).
 
     The split's *train* half becomes the campaign's starting set (``start_ids``); its *test* half
@@ -61,14 +66,19 @@ def _apply_split(dataset_id: ALSimulatorDataset, split_id: ALSimulatorSplit,
     if split_id.is_identity():
         return simulation_data, None
 
-    pool, assignment = split_id.resolve(simulation_data,
-                                        explicit_reference=dataset_id.reference_sequence())
+    pool, assignment = split_id.resolve(
+        simulation_data, explicit_reference=dataset_id.reference_sequence()
+    )
     if assignment is None:
-        print(f"Split {split_id.name}: pool {len(simulation_data)} -> {len(pool)} sequences.")
+        print(
+            f"Split {split_id.name}: pool {len(simulation_data)} -> {len(pool)} sequences."
+        )
         return pool, None
 
-    print(f"Split {split_id.name} [{split_id.definition().axis.value}] on {len(pool)} sequences: "
-          f"{assignment.summary()} ({assignment.description}).")
+    print(
+        f"Split {split_id.name} [{split_id.definition().axis.value}] on {len(pool)} sequences: "
+        f"{assignment.summary()} ({assignment.description})."
+    )
     return pool, assignment.train_ids
 
 
@@ -79,19 +89,25 @@ def profile_summary(slowest: int = 5) -> str:
     """Where client-side wall time went across every campaign run so far."""
     if not TASK_TIMINGS:
         return "No campaigns timed."
-    totals = {bucket: sum(getattr(timing, bucket) for _, timing in TASK_TIMINGS)
-              for bucket in ("total", "http", "sleep", "handler")}
+    totals = {
+        bucket: sum(getattr(timing, bucket) for _, timing in TASK_TIMINGS)
+        for bucket in ("total", "http", "sleep", "handler")
+    }
     polls = sum(timing.polls for _, timing in TASK_TIMINGS)
     dtos = sum(timing.dtos for _, timing in TASK_TIMINGS)
     # Whatever is left is server compute the client polled through.
     waited = totals["total"] - totals["http"] - totals["sleep"] - totals["handler"]
 
-    lines = [f"{len(TASK_TIMINGS)} campaigns, {totals['total']:.0f}s of client wall time "
-             f"({polls} polls, {dtos} dtos)"]
-    for label, value in (("http (+deserialise)", totals["http"]),
-                         ("sleep (poll interval)", totals["sleep"]),
-                         ("handler", totals["handler"]),
-                         ("waited on server", waited)):
+    lines = [
+        f"{len(TASK_TIMINGS)} campaigns, {totals['total']:.0f}s of client wall time "
+        f"({polls} polls, {dtos} dtos)"
+    ]
+    for label, value in (
+        ("http (+deserialise)", totals["http"]),
+        ("sleep (poll interval)", totals["sleep"]),
+        ("handler", totals["handler"]),
+        ("waited on server", waited),
+    ):
         share = value / totals["total"] * 100 if totals["total"] else 0
         lines.append(f"  {label:<22} {value:8.0f}s  {share:5.1f}%")
     lines.append(f"  slowest {slowest} campaigns:")
@@ -168,11 +184,13 @@ class ActiveLearningSimulator(ABC):
         # Concurrent callers pass show_progress=False: several tqdm bars writing to one
         # terminal interleave into noise.
         result = task.run_with_progress() if show_progress else task.run()
-        TASK_TIMINGS.append((
-            f"{self.base_config.dataset_id.name}/{embedder_name}/{model_type.value}"
-            f"/{self.base_config.settings.short_name}/seed{seed}",
-            task.timing,
-        ))
+        TASK_TIMINGS.append(
+            (
+                f"{self.base_config.dataset_id.name}/{embedder_name}/{model_type.value}"
+                f"/{self.base_config.settings.short_name}/seed{seed}",
+                task.timing,
+            )
+        )
         if result is None:
             raise RuntimeError("Simulation failed")
 

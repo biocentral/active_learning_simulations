@@ -66,12 +66,20 @@ def compress_reports(run_name: str):
                 is_success=ssr.is_success(),
                 seed=ssr.al_campaign_config.seed,
                 stop_reasons=ssr.simulation_result.stop_reasons or ["None"],
-                iteration_metrics_total=[m.mean for m in ssr.simulation_result.iteration_metrics_total or []],
-                iteration_metrics_suggestions=[m.mean for m in
-                                               ssr.simulation_result.iteration_metrics_suggestions or []],
+                iteration_metrics_total=[
+                    m.mean for m in ssr.simulation_result.iteration_metrics_total or []
+                ],
+                iteration_metrics_suggestions=[
+                    m.mean
+                    for m in ssr.simulation_result.iteration_metrics_suggestions or []
+                ],
                 iteration_hits=list(ssr.simulation_result.iteration_hits or []),
-                iteration_consecutive_failures=list(ssr.simulation_result.iteration_consecutive_failures or []),
-                iteration_results_count=len(ssr.simulation_result.iteration_results or []),
+                iteration_consecutive_failures=list(
+                    ssr.simulation_result.iteration_consecutive_failures or []
+                ),
+                iteration_results_count=len(
+                    ssr.simulation_result.iteration_results or []
+                ),
                 n_hits_threshold=ssr.al_simulation_config.stopping_config.n_hits,
             )
             single_sims.append(sim_data)
@@ -90,7 +98,7 @@ def compress_reports(run_name: str):
             per_sim_metrics_total=per_sim_metrics_total,
             per_sim_metrics_suggestions=per_sim_metrics_suggestions,
             per_sim_is_success=per_sim_is_success,
-            single_sims=single_sims
+            single_sims=single_sims,
         )
         experiments.append(exp_data)
 
