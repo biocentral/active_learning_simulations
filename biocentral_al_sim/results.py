@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import ClassVar
 
 import altair as alt
-import numpy as np
 from biocentral_api import (
     ActiveLearningEngineeringCampaignConfig,
     ActiveLearningEngineeringSimulationConfig,
@@ -189,7 +188,10 @@ class ActiveLearningSingleSimulationResult:
             "value",
             self.al_campaign_config.model_type,
         )
-        return f"seed={seed} | {model_type} | success={self.is_success()}"
+        label = f"seed={seed} | {model_type}"
+        if self.al_simulation_config.stopping_config.n_hits is None:
+            return label
+        return f"{label} | success={self.is_success()}"
 
     def build_altair_charts(self):
         """Build interactive Altair charts mirroring `_visualize_results()`.
@@ -455,9 +457,7 @@ class ActiveLearningMultipleSimulationResult:
 
         n_hits_threshold = self.simulation_results[
             0
-        ].al_simulation_config.stopping_config.n_hits or int(
-            np.inf
-        )  # No threshold if it was None
+        ].al_simulation_config.stopping_config.n_hits
         max_iterations = max((len(m) for m in per_sim_metrics_total), default=0)
         success_count = sum(1 for s in per_sim_is_success if s)
 

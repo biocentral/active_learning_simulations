@@ -48,7 +48,8 @@ class DashboardCampaignSetup(BaseModel):
 class DashboardSingleSimulationData(BaseModel):
     label: str = Field(
         ...,
-        description="Label identifying the simulation with seed, model type, and success status",
+        description="Label identifying the simulation by seed and model type, plus its "
+        "success if it has a hit threshold",
     )
     is_success: bool = Field(
         ...,

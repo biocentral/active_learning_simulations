@@ -344,8 +344,10 @@ def build_performance_summary_chart(
 def build_mean_cumulative_successes_chart(
     per_sim_n_hits: list[list[int]],
     per_sim_is_success: list[bool],
-    target_threshold: int,
+    target_threshold: int | None,
 ) -> alt.LayerChart:
+    """Cumulative hits per simulation and their mean. Without a target threshold there is no
+    success to colour the simulations by, nor a target line."""
     if not per_sim_n_hits:
         return alt.layer(
             alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()
@@ -386,26 +388,30 @@ def build_mean_cumulative_successes_chart(
         }
     )
 
+    tooltip = [
+        alt.Tooltip("iteration:Q", title="Iteration"),
+        alt.Tooltip("value:Q", title="Cumulative"),
+        alt.Tooltip("sim:N", title="Sim #"),
+    ]
     individual = (
         alt.Chart(indiv_df)
-        .mark_line(opacity=0.25, strokeWidth=1)
+        .mark_line(opacity=0.25, strokeWidth=1, color="grey")
         .encode(
             x=alt.X("iteration:Q", title="Iteration"),
             y=alt.Y("value:Q", title="Cumulative Target Successes"),
             detail="sim:N",
+            tooltip=tooltip,
+        )
+    )
+    if target_threshold is not None:
+        individual = individual.encode(
             color=alt.Color(
                 "is_success:N",
                 scale=alt.Scale(domain=[True, False], range=["#2ecc71", "#e74c3c"]),
                 legend=alt.Legend(title="Run success"),
             ),
-            tooltip=[
-                alt.Tooltip("iteration:Q", title="Iteration"),
-                alt.Tooltip("value:Q", title="Cumulative"),
-                alt.Tooltip("sim:N", title="Sim #"),
-                alt.Tooltip("is_success:N", title="Success"),
-            ],
+            tooltip=[*tooltip, alt.Tooltip("is_success:N", title="Success")],
         )
-    )
 
     band = (
         alt.Chart(summary_df)
@@ -430,18 +436,18 @@ def build_mean_cumulative_successes_chart(
             ],
         )
     )
-    rule_df = pd.DataFrame(
-        {"y": [target_threshold], "label": [f"Target ({target_threshold})"]}
-    )
-    target_rule = (
-        alt.Chart(rule_df)
-        .mark_rule(color="red", strokeDash=[6, 4], strokeWidth=2)
-        .encode(y="y:Q", tooltip=["label:N"])
-    )
+    layers = [individual, band, mean_line]
+    if target_threshold is not None:
+        rule_df = pd.DataFrame(
+            {"y": [target_threshold], "label": [f"Target ({target_threshold})"]}
+        )
+        layers.append(
+            alt.Chart(rule_df)
+            .mark_rule(color="red", strokeDash=[6, 4], strokeWidth=2)
+            .encode(y="y:Q", tooltip=["label:N"])
+        )
 
-    return alt.layer(individual, band, mean_line, target_rule).properties(
-        title="Target Discovery Progress", height=360
-    )
+    return alt.layer(*layers).properties(title="Target Discovery Progress", height=360)
 
 
 def build_mean_metric_evolution_chart(

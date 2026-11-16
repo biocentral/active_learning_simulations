@@ -212,51 +212,46 @@ def _by_label(
 def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
     st.subheader("Overall performance summary")
 
-    cols = st.columns(4)
+    summary = exp.summary
+    threshold = summary["n_hits_threshold"]
+    cols = st.columns(3 if threshold is None else 4)
     cols[0].metric("Total number of hits", exp.aggregated_hits)
     cols[1].metric("Total number of suggestions", exp.aggregated_suggestions)
 
     total_sims = len(exp.per_sim_is_success)
     avg_hits = exp.aggregated_hits / total_sims if total_sims > 0 else 0
-    success_rate = (
-        sum(1 for s in exp.per_sim_is_success if s) / total_sims
-        if total_sims > 0
-        else 0
-    )
-
     cols[2].metric("Avg. hits per campaign", f"{avg_hits:.2f}")
-    cols[3].metric("Success rate", f"{success_rate:.1%}")
 
-    summary = exp.summary
     is_discrete = summary["is_discrete"]
     metric_name = "Accuracy" if is_discrete else "MAE"
-
-    # We need to compute stats for the charts
-    max_iterations = max((len(m) for m in exp.per_sim_metrics_total), default=0)
-    success_count = sum(1 for s in exp.per_sim_is_success if s)
-
-    convergence_iterations, _, _ = al_plots._compute_convergence_stats(
-        per_sim_n_hits=exp.per_sim_n_hits,
-        n_hits_threshold=summary["n_hits_threshold"],
-    )
 
     hits_per_sim = [sum(s) for s in exp.per_sim_n_hits]
     best_idx = np.argmax(hits_per_sim)
     worst_idx = np.argmin(hits_per_sim)
 
-    perf_summary_chart = al_plots.build_performance_summary_chart(
-        success_count=success_count,
-        total_runs=len(exp.per_sim_is_success),
-        convergence_iterations=convergence_iterations,
-        max_iterations=max_iterations,
-    )
-    st.altair_chart(perf_summary_chart.interactive(), width="stretch")
+    # Success needs a hit threshold to be measured against
+    if threshold is not None:
+        success_count = sum(1 for s in exp.per_sim_is_success if s)
+        success_rate = success_count / total_sims if total_sims > 0 else 0
+        cols[3].metric("Success rate", f"{success_rate:.1%}")
+
+        convergence_iterations, _, _ = al_plots._compute_convergence_stats(
+            per_sim_n_hits=exp.per_sim_n_hits,
+            n_hits_threshold=threshold,
+        )
+        perf_summary_chart = al_plots.build_performance_summary_chart(
+            success_count=success_count,
+            total_runs=total_sims,
+            convergence_iterations=convergence_iterations,
+            max_iterations=max((len(m) for m in exp.per_sim_metrics_total), default=0),
+        )
+        st.altair_chart(perf_summary_chart.interactive(), width="stretch")
 
     st.subheader("Target discovery progress")
     cum_success_chart = al_plots.build_mean_cumulative_successes_chart(
         per_sim_n_hits=exp.per_sim_n_hits,
         per_sim_is_success=exp.per_sim_is_success,
-        target_threshold=summary["n_hits_threshold"],
+        target_threshold=threshold,
     )
     st.altair_chart(cum_success_chart.interactive(), width="stretch")
 
@@ -308,7 +303,8 @@ def _render_single_simulation(
 
     cols_row1 = st.columns(2)
     cols_row1[0].metric("Seed", sim_data.seed)
-    cols_row1[1].metric("Success", sim_data.is_success)
+    if sim_data.n_hits_threshold is not None:
+        cols_row1[1].metric("Success", sim_data.is_success)
     st.metric("Primary Stop Reason", stop_reasons[0])
 
     metric_name = "Accuracy" if summary["is_discrete"] else "MAE"
@@ -518,38 +514,42 @@ def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -
         all_is_success = [s for e in exps for s in e.per_sim_is_success]
         total_campaigns = len(all_is_success)
 
-        conv_speeds = []
-        for e in exps:
-            target_threshold = e.summary["n_hits_threshold"]
-            for i, is_succ in enumerate(e.per_sim_is_success):
-                if is_succ:
-                    cumsum = np.cumsum(e.per_sim_n_hits[i])
-                    converged_at = np.where(cumsum >= target_threshold)[0]
-                    if len(converged_at) > 0:
-                        conv_speeds.append(int(converged_at[0]) + 1)
-
-        avg_conv = np.mean(conv_speeds) if conv_speeds else None
         avg_hits, _ = _extract_average_hits_per_campaign(exps)
-        comparison_data.append(
-            {
-                mode: key,
-                "Total Hits": all_hits,
-                "Unique Hits": len(all_unique_hits),
-                "Unique Hits Std. Dev.": f"{unique_hits_std:.2f}",
-                "Number of Campaigns": total_campaigns,
-                "Total Suggestions": all_suggestions,
-                "Hit Rate": f"{all_hits / all_suggestions:.2%}"
-                if all_suggestions > 0
-                else "0%",
-                "Avg. Hits per Campaign": f"{avg_hits:.2f}",
-                "Percentage of successful campaigns": f"{sum(all_is_success) / total_campaigns:.1%}"
+        row = {
+            mode: key,
+            "Total Hits": all_hits,
+            "Unique Hits": len(all_unique_hits),
+            "Unique Hits Std. Dev.": f"{unique_hits_std:.2f}",
+            "Number of Campaigns": total_campaigns,
+            "Total Suggestions": all_suggestions,
+            "Hit Rate": f"{all_hits / all_suggestions:.2%}"
+            if all_suggestions > 0
+            else "0%",
+            "Avg. Hits per Campaign": f"{avg_hits:.2f}",
+        }
+
+        # Success needs a hit threshold to be measured against
+        if any(e.summary["n_hits_threshold"] is not None for e in exps):
+            conv_speeds = []
+            for e in exps:
+                target_threshold = e.summary["n_hits_threshold"]
+                for i, is_succ in enumerate(e.per_sim_is_success):
+                    if is_succ:
+                        cumsum = np.cumsum(e.per_sim_n_hits[i])
+                        converged_at = np.where(cumsum >= target_threshold)[0]
+                        if len(converged_at) > 0:
+                            conv_speeds.append(int(converged_at[0]) + 1)
+
+            avg_conv = np.mean(conv_speeds) if conv_speeds else None
+            row["Percentage of successful campaigns"] = (
+                f"{sum(all_is_success) / total_campaigns:.1%}"
                 if total_campaigns > 0
-                else "0.0%",
-                "Avg. Convergence Iteration": f"{avg_conv:.2f}"
-                if avg_conv is not None
-                else "N/A",
-            }
-        )
+                else "0.0%"
+            )
+            row["Avg. Convergence Iteration"] = (
+                f"{avg_conv:.2f}" if avg_conv is not None else "N/A"
+            )
+        comparison_data.append(row)
 
     if group_by == "embedder":
         st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
@@ -559,7 +559,8 @@ def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -
     for exp in subset:
         cross_cum_inputs[exp.name] = exp.per_sim_n_hits
         cross_metric_inputs[exp.name] = exp.per_sim_metrics_total
-        cross_targets[exp.name] = exp.summary["n_hits_threshold"]
+        if exp.summary["n_hits_threshold"] is not None:
+            cross_targets[exp.name] = exp.summary["n_hits_threshold"]
         metric_names.add("Accuracy" if exp.summary["is_discrete"] else "MAE")
 
     metric_name = ", ".join(sorted(metric_names)) if metric_names else "Metric"
@@ -590,10 +591,11 @@ def _render_header(exp: DashboardExperimentData) -> None:
 
     cols_row2 = st.columns(3)
     cols_row2[0].metric("Sims", summary["n_simulations"])
-    cols_row2[1].metric(
-        "Successful", f"{summary['n_successful']}/{summary['n_simulations']}"
-    )
-    cols_row2[2].metric("Target threshold", summary["n_hits_threshold"])
+    if summary["n_hits_threshold"] is not None:
+        cols_row2[1].metric(
+            "Successful", f"{summary['n_successful']}/{summary['n_simulations']}"
+        )
+        cols_row2[2].metric("Target threshold", summary["n_hits_threshold"])
 
     setup = exp.setup
     cols_setup = st.columns(4)
