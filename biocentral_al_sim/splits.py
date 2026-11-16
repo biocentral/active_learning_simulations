@@ -308,7 +308,7 @@ class SequenceSelector(BaseModel):
     def describe(self) -> str:
         fields = ", ".join(
             f"{name}={value!r}"
-            for name, value in self.model_dump(exclude={"kind"}).items()
+            for name, value in self.model_dump(mode="json", exclude={"kind"}).items()
             if value is not None
         )
         return f"{self.kind}({fields})"
