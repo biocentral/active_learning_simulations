@@ -46,7 +46,7 @@ requires-dist = [
     { name = "polars", specifier = ">=1.0" },
     { name = "rich", specifier = ">=15.0" },
     { name = "seaborn", specifier = ">=0.13" },
-    { name = "streamlit", specifier = ">=1.36" },
+    { name = "streamlit", specifier = ">=1.51" },
     { name = "vl-convert-python", specifier = ">=1.6" },
 ]
 

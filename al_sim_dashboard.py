@@ -120,7 +120,7 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
         convergence_iterations=convergence_iterations,
         max_iterations=max_iterations,
     )
-    st.altair_chart(perf_summary_chart.interactive(), use_container_width=True)
+    st.altair_chart(perf_summary_chart.interactive(), width="stretch")
 
     st.subheader("Target discovery progress")
     cum_success_chart = al_plots.build_mean_cumulative_successes_chart(
@@ -128,7 +128,7 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
         per_sim_is_success=exp.per_sim_is_success,
         target_threshold=summary["n_hits_threshold"],
     )
-    st.altair_chart(cum_success_chart.interactive(), use_container_width=True)
+    st.altair_chart(cum_success_chart.interactive(), width="stretch")
 
     st.subheader("Model performance evolution")
     metric_evo_chart = al_plots.build_mean_metric_evolution_chart(
@@ -137,7 +137,7 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
         worst_run_metrics=exp.per_sim_metrics_total[worst_idx],
         metric_name=metric_name,
     )
-    st.altair_chart(metric_evo_chart.interactive(), use_container_width=True)
+    st.altair_chart(metric_evo_chart.interactive(), width="stretch")
 
     # Added: chart with suggestions metric overlay if available
     if exp.per_sim_metrics_suggestions:
@@ -151,7 +151,7 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
             worst_run_metrics=exp.per_sim_metrics_suggestions[worst_idx],
             metric_name=f"{metric_name} (Suggestions)",
         )
-        st.altair_chart(suggestions_chart.interactive(), use_container_width=True)
+        st.altair_chart(suggestions_chart.interactive(), width="stretch")
 
     unique_hits, _ = _extract_unique_hits([exp])
     dataset_sequences = _load_dataset_sequences(exp.dataset_id.name)
@@ -168,7 +168,7 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
             highlight_ids=unique_hits,
             highlight_name="Unique Hits",
         )
-        st.altair_chart(chart_projection.chart.interactive(), use_container_width=True)
+        st.altair_chart(chart_projection.chart.interactive(), width="stretch")
 
 
 def _render_single_simulation(
@@ -201,10 +201,10 @@ def _render_single_simulation(
 
     col_left, col_right = st.columns(2)
     with col_left:
-        st.altair_chart(chart_metric.interactive(), use_container_width=True)
-        st.altair_chart(chart_failures.interactive(), use_container_width=True)
+        st.altair_chart(chart_metric.interactive(), width="stretch")
+        st.altair_chart(chart_failures.interactive(), width="stretch")
     with col_right:
-        st.altair_chart(chart_successes.interactive(), use_container_width=True)
+        st.altair_chart(chart_successes.interactive(), width="stretch")
 
     # Projection Chart
     projection_result = _load_projection(
@@ -274,7 +274,7 @@ def _render_single_simulation(
         project_view_idx = st.session_state.projection_view_idx
         chart_projection = projections[project_view_idx]
 
-        st.altair_chart(chart_projection.chart.interactive(), use_container_width=True)
+        st.altair_chart(chart_projection.chart.interactive(), width="stretch")
 
     with st.expander("Raw stats"):
         st.markdown(f"- **Stop reasons:** {stop_reasons}")
@@ -439,14 +439,14 @@ def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -
         al_plots.build_cross_experiment_cumulative_chart(
             cross_cum_inputs, cross_targets
         ).interactive(),
-        use_container_width=True,
+        width="stretch",
     )
     st.subheader(f"Model performance ({metric_name}) — mean per experiment")
     st.altair_chart(
         al_plots.build_cross_experiment_metric_chart(
             cross_metric_inputs, metric_name
         ).interactive(),
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -517,7 +517,7 @@ def _render_dataset_tab(selected_dataset: str, base_config, exps):
         .configure_legend(labelFontSize=24, titleFontSize=24)
         .configure_title(fontSize=24)
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def _extract_cross_dataset_data(
@@ -625,7 +625,7 @@ def _plot_cross_dataset_data(cross_dataset_data: dict, value_name: str):
         .configure_title(fontSize=24)
     )
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def _render_cross_dataset_comparison(
