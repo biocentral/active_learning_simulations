@@ -1,12 +1,38 @@
 import re
 
 from .dashboard_models import (
+    DashboardCampaignSetup,
     DashboardCompressedData,
     DashboardExperimentData,
     DashboardSingleSimulationData,
 )
 from .paths import RESULTS_DIR, RUN_VERSION
-from .results import ActiveLearningMultipleSimulationResult
+from .results import (
+    ActiveLearningEngineeringSingleSimulationResult,
+    ActiveLearningMultipleSimulationResult,
+    ActiveLearningSingleSimulationResult,
+)
+
+
+def campaign_setup(ssr: ActiveLearningSingleSimulationResult) -> DashboardCampaignSetup:
+    """Setup of one campaign. Screening campaigns draw from the pool without delta embeddings."""
+    config = ssr.al_simulation_config
+    stopping = config.stopping_config
+    engineering = isinstance(ssr, ActiveLearningEngineeringSingleSimulationResult)
+    generate_candidates = engineering and config.generate_candidates
+    return DashboardCampaignSetup(
+        n_start=len(config.start_ids) if config.start_ids else config.n_start,
+        n_suggestions_per_iteration=config.n_suggestions_per_iteration,
+        n_max_iterations=stopping.n_max_iterations,
+        max_labels_budget=stopping.max_labels_budget,
+        n_hits=stopping.n_hits,
+        max_consecutive_failures=stopping.max_consecutive_failures,
+        hit_percentile=config.hit_percentile,
+        generate_candidates=generate_candidates,
+        n_substitutions=config.n_substitutions if generate_candidates else None,
+        use_delta_embeddings=engineering
+        and ssr.al_campaign_config.use_delta_embeddings,
+    )
 
 
 def parse_dataset_from_filename(fname: str) -> str:
@@ -90,6 +116,7 @@ def compress_reports(run_name: str):
             embedder=embedder_name,
             model=model_name,
             split_id=split_id,
+            setup=campaign_setup(multi.simulation_results[0]),
             summary=summary,
             aggregated_hits=multi.get_aggregated_hits(),
             aggregated_suggestions=multi.get_aggregated_number_of_suggestions(),
