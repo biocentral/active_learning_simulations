@@ -14,7 +14,6 @@ from biocentral_api import (
     BiocentralAPI,
     SequenceData,
 )
-from biotrainer_core.input_files import read_FASTA
 
 from .datasets import ALSimulatorDataset
 from .results import (
@@ -31,7 +30,7 @@ def get_simulator(
     dataset_id: ALSimulatorDataset,
     split_id: ALSimulatorSplit = ALSimulatorSplit.FULL_POOL,
 ) -> ActiveLearningScreeningSimulator:
-    simulation_data = read_FASTA(dataset_id.to_path())
+    simulation_data = dataset_id.pool()
     assert len(simulation_data) > 0, f"Simulation data for {dataset_id} is empty."
 
     simulation_data, start_ids = _apply_split(
