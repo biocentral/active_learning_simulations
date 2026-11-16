@@ -493,11 +493,11 @@ def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -
 
     groups: dict[str, list[DashboardExperimentData]] = {}
     for exp in subset:
+        if group_by == "embedder" and exp.model == "RANDOM":
+            continue  # Exclude random surrogate models from embedder comparison
         key = getattr(exp, group_by)
         if key not in groups:
             groups[key] = []
-        if group_by == "embedder" and exp.model == "RANDOM":
-            continue  # Exclude random surrogate models from embedder comparison
         groups[key].append(exp)
 
     comparison_data = []
@@ -510,6 +510,9 @@ def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -
         all_hits = sum(e.aggregated_hits for e in exps)
         all_suggestions = sum(e.aggregated_suggestions for e in exps)
         all_unique_hits, unique_hits_std = _extract_unique_hits(exps)
+        findable_hits = set(exps[0].potential_hits) - set.intersection(
+            *(set(e.start_set_hits) for e in exps)
+        )
 
         all_is_success = [s for e in exps for s in e.per_sim_is_success]
         total_campaigns = len(all_is_success)
@@ -518,7 +521,7 @@ def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -
         row = {
             mode: key,
             "Total Hits": all_hits,
-            "Unique Hits": len(all_unique_hits),
+            "Unique Hits / Findable": f"{len(all_unique_hits)} / {len(findable_hits)}",
             "Unique Hits Std. Dev.": f"{unique_hits_std:.2f}",
             "Number of Campaigns": total_campaigns,
             "Total Suggestions": all_suggestions,
@@ -554,6 +557,11 @@ def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -
     if group_by == "embedder":
         st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
     st.table(pd.DataFrame(comparison_data))
+    st.caption(
+        "Findable hits leave out potential hits that every campaign of the group started "
+        "with. Totals and unique hits grow with the number of campaigns, so compare them "
+        "only between groups of equal size."
+    )
 
     st.subheader("Visual Comparison")
     for exp in subset:
