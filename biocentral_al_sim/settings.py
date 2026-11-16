@@ -123,18 +123,3 @@ class ActiveLearningFixedBaseConfig(BaseModel):
     target_ub: float | None = None
     target_value: float | None = None
     discrete_targets: list[str] | None = None
-
-    def explain_optimization_mode(self) -> str:
-        match self.optimization_mode:
-            case ActiveLearningOptimizationMode.MAXIMIZE:
-                return "Maximize the target value."
-            case ActiveLearningOptimizationMode.MINIMIZE:
-                return "Minimize the target value."
-            case ActiveLearningOptimizationMode.DISCRETE:
-                return "Classify the sequences into discrete classes."
-            case ActiveLearningOptimizationMode.INTERVAL:
-                return "Find target sequences with labels in the specified interval."
-            case ActiveLearningOptimizationMode.VALUE:
-                return "Find targets with the specified value."
-            case _:
-                return "Unknown optimization mode."

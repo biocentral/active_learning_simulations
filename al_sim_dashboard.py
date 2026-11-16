@@ -17,19 +17,15 @@ import streamlit as st
 from biocentral_api import ProjectionResult
 from biocentral_vis import BiocentralChart
 from biotrainer_core.data_classes import SequenceData
-from biotrainer_core.input_files import read_FASTA
 
 from biocentral_al_sim import plots as al_plots
 from biocentral_al_sim.dashboard_models import (
+    DashboardCampaignSetup,
     DashboardCompressedData,
     DashboardExperimentData,
 )
 from biocentral_al_sim.datasets import ALSimulatorDataset
 from biocentral_al_sim.paths import PROJECTIONS_DIR, RESULTS_DIR
-from biocentral_al_sim.simulators import (
-    ActiveLearningSimulator,
-    get_simulator,
-)
 
 st.set_page_config(page_title="AL Simulation Dashboard", layout="wide")
 
@@ -39,10 +35,28 @@ def _get_run_files():
     return list(RESULTS_DIR.glob("compressed_dashboard_data_*.json"))
 
 
+@st.cache_resource(show_spinner=True)
+def _load_pool(selected_dataset: str) -> list[SequenceData]:
+    """Sequences the dataset's campaigns drew from."""
+    return ALSimulatorDataset[selected_dataset].pool()
+
+
 @st.cache_data(show_spinner=True)
-def _load_dataset_sequences(selected_dataset: str) -> list[SequenceData]:
-    al_sim_dataset_path = ALSimulatorDataset[selected_dataset].to_path()
-    return read_FASTA(al_sim_dataset_path)
+def _load_pool_table(selected_dataset: str) -> pd.DataFrame:
+    df = pd.DataFrame([seq.model_dump() for seq in _load_pool(selected_dataset)])
+
+    # Convert label to float if possible
+    if "label" in df.columns:
+
+        def try_float_conversion(val):
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return val
+
+        df["label"] = df["label"].apply(try_float_conversion)
+
+    return df.drop(columns=["attributes", "embedding", "mask", "set"], errors="ignore")
 
 
 @st.cache_data(show_spinner=False)
@@ -73,10 +87,39 @@ def _load_projection(
     return None
 
 
-@st.cache_data(show_spinner=True)
-def _load_simulator(selected_dataset: str) -> ActiveLearningSimulator:
-    al_sim_dataset = ALSimulatorDataset[selected_dataset]
-    return get_simulator(al_sim_dataset)
+def _hit_definition(exp: DashboardExperimentData) -> str:
+    match exp.summary["optimization_mode"]:
+        case "MAXIMIZE":
+            return f"Pool members in the top {exp.setup.hit_percentile:g}% of the pool's labels."
+        case "MINIMIZE":
+            return f"Pool members in the bottom {exp.setup.hit_percentile:g}% of the pool's labels."
+        case _:
+            return "Pool members that meet the target."
+
+
+def _potential_hits_summary(exp: DashboardExperimentData, n_pool: int) -> str:
+    n_potential_hits = len(exp.potential_hits)
+    return f"{n_potential_hits} ({100 * n_potential_hits / n_pool:.2f} % of the pool)"
+
+
+def _candidate_source(setup: DashboardCampaignSetup) -> str:
+    if not setup.generate_candidates:
+        return "Pool"
+    plural = "" if setup.n_substitutions == 1 else "s"
+    return f"Generated ({setup.n_substitutions} substitution{plural})"
+
+
+def _stopping_criteria(setup: DashboardCampaignSetup) -> str:
+    criteria = []
+    if setup.max_labels_budget is not None:
+        criteria.append(f"a budget of {setup.max_labels_budget} labels")
+    if setup.n_max_iterations is not None:
+        criteria.append(f"{setup.n_max_iterations} rounds")
+    if setup.n_hits is not None:
+        criteria.append(f"{setup.n_hits} hits")
+    if setup.max_consecutive_failures is not None:
+        criteria.append(f"{setup.max_consecutive_failures} rounds without a hit")
+    return "Stops at whichever comes first: " + ", ".join(criteria)
 
 
 def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
@@ -154,7 +197,7 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
         st.altair_chart(suggestions_chart.interactive(), width="stretch")
 
     unique_hits, _ = _extract_unique_hits([exp])
-    dataset_sequences = _load_dataset_sequences(exp.dataset_id.name)
+    dataset_sequences = _load_pool(exp.dataset_id.name)
     projection_result = _load_projection(
         dataset_id=exp.dataset_id, embedder_name=exp.embedder
     )
@@ -215,7 +258,7 @@ def _render_single_simulation(
         return
     else:
         # Projection Chart Navigation
-        dataset_sequences = _load_dataset_sequences(exp.dataset_id.name)
+        dataset_sequences = _load_pool(exp.dataset_id.name)
 
         # Create options: Full dataset + each iteration
         projection_options = ["Full Dataset"] + [
@@ -464,49 +507,41 @@ def _render_header(exp: DashboardExperimentData) -> None:
         "Successful", f"{summary['n_successful']}/{summary['n_simulations']}"
     )
     cols_row2[2].metric("Target threshold", summary["n_hits_threshold"])
+
+    setup = exp.setup
+    cols_setup = st.columns(4)
+    cols_setup[0].metric("Starting set", setup.n_start)
+    cols_setup[1].metric("Suggestions per round", setup.n_suggestions_per_iteration)
+    cols_setup[2].metric("Candidates", _candidate_source(setup))
+    cols_setup[3].metric(
+        "Delta embeddings", "On" if setup.use_delta_embeddings else "Off"
+    )
+    st.caption(_stopping_criteria(setup))
     if summary.get("discrete_targets"):
         st.caption(f"Discrete targets: {', '.join(summary['discrete_targets'])}")
 
 
-def _render_dataset_tab(selected_dataset: str, base_config, exps):
-    potential_hits = set(exps[0].potential_hits)
-    n_potential_hits = len(potential_hits)
-    n_potential_hits_percent = round(
-        100 * n_potential_hits / len(base_config.simulation_data), 2
-    )
+def _render_dataset_tab(selected_dataset: str, exps):
+    pool = _load_pool(selected_dataset)
     st.metric(
         "**Number of potential hits:**",
-        value=f"{n_potential_hits} ({n_potential_hits_percent} %)",
-        help="Total number of potential hits in the dataset given the campaign configuration.",
+        value=_potential_hits_summary(exps[0], len(pool)),
+        help=_hit_definition(exps[0]),
     )
-    dataset_sequences = _load_dataset_sequences(selected_dataset)
-    df = pd.DataFrame([seq.model_dump() for seq in dataset_sequences])
-
-    # Convert label to float if possible
-    if "label" in df.columns:
-
-        def try_float_conversion(val):
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return val
-
-        df["label"] = df["label"].apply(try_float_conversion)
-
-    df = df.drop(columns=["attributes", "embedding", "mask", "set"], errors="ignore")
-    df.insert(1, "potential_hit", df["seq_id"].isin(potential_hits))
+    df = _load_pool_table(selected_dataset)
+    df.insert(1, "potential_hit", df["seq_id"].isin(set(exps[0].potential_hits)))
 
     st.markdown(
-        "**Simulation Data**",
-        help="Dataframe of the simulation dataset, potential hits first.",
+        "**Pool**",
+        help="Sequences the campaigns drew from, potential hits first.",
     )
     st.dataframe(df.sort_values("potential_hit", ascending=False))
 
     # Label distribution Chart
-    biotrainer_chart = BiocentralChart.label_distribution(dataset_sequences)
+    biotrainer_chart = BiocentralChart.label_distribution(pool)
     st.markdown(
-        "**Dataset Label Distribution**",
-        help="Distribution of all labels in the dataset.",
+        "**Pool Label Distribution**",
+        help="Distribution of all labels in the pool.",
     )
     chart = biotrainer_chart.chart
 
@@ -747,88 +782,40 @@ def main():
         ds_groups[dataset_name].append(exp)
 
     selected_dataset = st.sidebar.selectbox("Select Dataset", sorted(ds_groups.keys()))
-    al_simulator = _load_simulator(selected_dataset)
-    base_config = al_simulator.base_config
-    simulation_config = al_simulator.get_simulation_config()
+    dataset_id = ALSimulatorDataset[selected_dataset]
+    definition = dataset_id.definition()
+    pool = _load_pool(selected_dataset)
     exps = ds_groups[selected_dataset]
 
-    # Display configuration summary in sidebar
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Simulation Setup")
-
-    with st.sidebar.expander("Base Configuration", expanded=True):
+    with st.sidebar.expander("Dataset", expanded=True):
         st.markdown(
-            f"**Optimization Mode:** {base_config.optimization_mode.value}",
-            help=f"The goal of this simulation: {base_config.explain_optimization_mode()}",
+            f"**Optimization Mode:** {definition.optimization_mode.value}",
+            help=f"The goal of this simulation: {definition.explain_optimization_mode()}",
         )
 
-        if base_config.target_lb is not None:
-            st.markdown(f"**Target Lower Bound:** {base_config.target_lb}")
-        if base_config.target_ub is not None:
-            st.markdown(f"**Target Upper Bound:** {base_config.target_ub}")
-        if base_config.target_value is not None:
-            st.markdown(f"**Target Value:** {base_config.target_value}")
-        if base_config.discrete_targets:
+        if definition.target_lb is not None:
+            st.markdown(f"**Target Lower Bound:** {definition.target_lb}")
+        if definition.target_ub is not None:
+            st.markdown(f"**Target Upper Bound:** {definition.target_ub}")
+        if definition.target_value is not None:
+            st.markdown(f"**Target Value:** {definition.target_value}")
+        if definition.discrete_targets:
             st.markdown(
-                f"**Discrete Targets:** {', '.join(base_config.discrete_targets)}"
+                f"**Discrete Targets:** {', '.join(definition.discrete_targets)}"
             )
 
-        n_sim_data = len(base_config.simulation_data)
+        selector = definition.pool_selector
         st.markdown(
-            f"**Total Sequences:** {n_sim_data}",
-            help="Total number of sequences in the simulation dataset.",
+            f"**Pool:** {len(pool):,} sequences",
+            help=f"Restricted to {selector.describe()}."
+            if selector
+            else "Every sequence in the dataset.",
         )
-        potential_hits = exps[0].potential_hits
-        n_potential_hits = len(potential_hits)
-        n_potential_hits_percent = round(100 * n_potential_hits / n_sim_data, 2)
         st.markdown(
-            f"**Number of potential hits:** {n_potential_hits} ({n_potential_hits_percent} %)",
-            help="Total number of potential hits in the dataset given the campaign configuration.",
+            f"**Number of potential hits:** {_potential_hits_summary(exps[0], len(pool))}",
+            help=_hit_definition(exps[0]),
         )
-
-    with st.sidebar.expander("Simulation Configuration", expanded=True):
-        if simulation_config.n_start is not None:
-            st.markdown(
-                f"**Initial Training Sequences:** {simulation_config.n_start}",
-                help="These sequences are chosen at random from the total sequences (using the simulation seed).",
-            )
-        if simulation_config.start_ids is not None:
-            st.markdown(
-                f"**Start IDs Count:** {len(simulation_config.start_ids)}",
-                help="These sequences and their labels are used to start the simulation.",
-            )
-
-        st.markdown(
-            f"**Suggestions per Iteration:** {simulation_config.n_suggestions_per_iteration}",
-            help="Number of suggestions selected per iteration of each campaign.",
-        )
-
-        stop_cfg = simulation_config.stopping_config
-        st.markdown(
-            "**Stopping Criteria:**",
-            help="Determines when the simulated campaign should stop.",
-        )
-        if hasattr(stop_cfg, "n_hits") and stop_cfg.n_hits is not None:
-            st.markdown(
-                f"  - Number of Hits: {stop_cfg.n_hits}",
-                help="Stops the campaign when this number of targets (hits) is found.",
-            )
-        if (
-            hasattr(stop_cfg, "n_max_iterations")
-            and stop_cfg.n_max_iterations is not None
-        ):
-            st.markdown(
-                f"  - Max Iterations: {stop_cfg.n_max_iterations}",
-                help="Always stops the campaign after this number of iterations.",
-            )
-        if (
-            hasattr(stop_cfg, "max_consecutive_failures")
-            and stop_cfg.max_consecutive_failures is not None
-        ):
-            st.markdown(
-                f"  - Max Consecutive Failures: {stop_cfg.max_consecutive_failures}",
-                help="Stops the campaign after this number of consecutive failures (no hits found in an iteration).",
-            )
 
     subset = ds_groups[selected_dataset]
 
@@ -856,7 +843,7 @@ def main():
         _render_inner_simulation_comparison(subset)
 
     with main_tabs[2]:  # Dataset statistics
-        _render_dataset_tab(selected_dataset, base_config, exps)
+        _render_dataset_tab(selected_dataset, exps)
 
     st.divider()
 

@@ -46,6 +46,21 @@ class ALSimulatorDatasetDefinition(BaseModel):
         "Mutation-aware selectors need reference_fasta_path.",
     )
 
+    def explain_optimization_mode(self) -> str:
+        match self.optimization_mode:
+            case ActiveLearningOptimizationMode.MAXIMIZE:
+                return "Maximize the target value."
+            case ActiveLearningOptimizationMode.MINIMIZE:
+                return "Minimize the target value."
+            case ActiveLearningOptimizationMode.DISCRETE:
+                return "Classify the sequences into discrete classes."
+            case ActiveLearningOptimizationMode.INTERVAL:
+                return "Find target sequences with labels in the specified interval."
+            case ActiveLearningOptimizationMode.VALUE:
+                return "Find targets with the specified value."
+            case _:
+                return "Unknown optimization mode."
+
 
 class ALSimulatorDataset(Enum):
     # The values are stored in the compressed dashboard data, so do not reorder these members
