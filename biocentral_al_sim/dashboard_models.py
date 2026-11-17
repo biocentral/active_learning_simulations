@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 from .datasets import ALSimulatorDataset
 from .splits import ALSimulatorSplit
 
+UNCERTAINTY_CALIBRATION_LEVELS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
+
 
 class DashboardCampaignSetup(BaseModel):
     """How an experiment's campaigns acquired labels."""
@@ -48,17 +50,17 @@ class DashboardCampaignSetup(BaseModel):
 class DashboardSingleSimulationData(BaseModel):
     label: str = Field(
         ...,
-        description="Label identifying the simulation by seed and model type, plus its "
+        description="Label identifying the replicate by seed and model type, plus its "
         "success if it has a hit threshold",
     )
     is_success: bool = Field(
         ...,
-        description="Whether the simulation met the success criteria (e.g. reached target hits)",
+        description="Whether the replicate met the success criteria (e.g. reached target hits)",
     )
-    seed: int = Field(..., description="Random seed used for this simulation run")
+    seed: int = Field(..., description="Random seed of this replicate")
     stop_reasons: list[str] = Field(
         ...,
-        description="Reasons why the simulation stopped (e.g., budget exhausted, convergence reached)",
+        description="Reasons why the replicate stopped (e.g., budget exhausted, convergence reached)",
     )
     iteration_metrics_total: list[float] = Field(
         ..., description="Mean metric values for all masked data points per iteration"
@@ -73,7 +75,7 @@ class DashboardSingleSimulationData(BaseModel):
         ..., description="Count of consecutive failures in each iteration"
     )
     iteration_results_count: int = Field(
-        ..., description="Total number of iteration results in the simulation"
+        ..., description="Total number of iteration results in the replicate"
     )
     n_hits_threshold: int | None = Field(
         ...,
@@ -85,7 +87,7 @@ class DashboardSingleSimulationData(BaseModel):
 class DashboardExperimentData(BaseModel):
     name: str = Field(..., description="Results file the experiment was read from")
     dataset_id: ALSimulatorDataset = Field(
-        ..., description="Dataset the simulations ran on"
+        ..., description="Dataset the replicates ran on"
     )
     embedder: str = Field(..., description="Embedder name")
     model: str = Field(..., description="Surrogate model")
@@ -97,9 +99,9 @@ class DashboardExperimentData(BaseModel):
         ..., description="How the experiment's campaigns acquired labels"
     )
     summary: dict = Field(..., description="Summary values for the dashboard header")
-    aggregated_hits: int = Field(..., description="Hits summed over all simulations")
+    aggregated_hits: int = Field(..., description="Hits summed over all replicates")
     aggregated_suggestions: int = Field(
-        ..., description="Suggestions summed over all simulations"
+        ..., description="Suggestions summed over all replicates"
     )
     potential_hits: list[str] = Field(
         ..., description="Ids of the landscape members that count as hits"
@@ -110,21 +112,56 @@ class DashboardExperimentData(BaseModel):
         "of the experiment can find",
     )
     per_sim_n_hits: list[list[int]] = Field(
-        ..., description="Number of hits per iteration (one list per simulation)"
+        ..., description="Number of hits per iteration (one list per replicate)"
     )
     per_sim_metrics_total: list[list[float]] = Field(
         ...,
-        description="Mean metric over all predicted data points per iteration, one list per simulation",
+        description="Mean metric over all predicted data points per iteration, one list per replicate",
     )
     per_sim_metrics_suggestions: list[list[float]] = Field(
         ...,
-        description="Mean metric over the suggested data points per iteration, one list per simulation",
+        description="Mean metric over the suggested data points per iteration, one list per replicate",
     )
     per_sim_is_success: list[bool] = Field(
-        ..., description="Whether each simulation met its success criteria"
+        ..., description="Whether each replicate met its success criteria"
+    )
+    per_sim_n_suggestions: list[int] = Field(
+        ..., description="Number of suggestions of each replicate"
+    )
+    per_sim_best_label: list[float] | None = Field(
+        ...,
+        description="Best label among each replicate's suggestions, the highest when "
+        "maximizing and the lowest when minimizing; None for discrete targets",
+    )
+    per_sim_suggested_label_means: list[list[float]] | None = Field(
+        ...,
+        description="Mean label of each round's suggestions, one list per replicate; None "
+        "for discrete targets",
+    )
+    per_sim_calibration: list[list[float]] | None = Field(
+        ...,
+        description="Share of each replicate's scored candidates that lie within the "
+        "predicted central interval at each of UNCERTAINTY_CALIBRATION_LEVELS; None for "
+        "discrete targets.",
+    )
+    per_sim_final_round_metrics: list[dict[str, float | None]] | None = Field(
+        ...,
+        description="Each replicate's MAE, RMSE, Spearman correlation and NDCG@10/@96/@1%/@10% "
+        "of the final round's predictions on the variants scored in that round, None where "
+        "undefined or the predictions take at most two values; None for discrete targets",
+    )
+    per_sim_round_errors: dict[str, list[list[float]]] | None = Field(
+        ...,
+        description="Error of each round's predictions, keyed '<mae|rmse>_<suggestions|scored>' "
+        "for the round's suggestions and every candidate it scored, one list per replicate; "
+        "None for discrete targets",
+    )
+    per_sim_final_round_scored: list[int] = Field(
+        ...,
+        description="Number of variants scored in each replicate's final round.",
     )
     single_sims: list[DashboardSingleSimulationData] = Field(
-        ..., description="Per-simulation data for the drill-down view"
+        ..., description="Per-replicate data for the drill-down view"
     )
 
 
