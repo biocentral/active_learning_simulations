@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -149,38 +148,32 @@ def _arm(exp: DashboardExperimentData) -> tuple:
 
 
 def _filter_experiments(
-    shown: list[DashboardExperimentData],
     experiments: list[DashboardExperimentData],
 ) -> list[DashboardExperimentData]:
-    """Narrow the run to one throughput, candidate source and embedding variant.
-
-    The choices offered are those of `shown`, the selected dataset's experiments, so its views
-    are never empty; the choice applies to all `experiments`.
-    """
+    """Filter a dataset's experiments to one throughput, candidate source and embedding
+    variant."""
     st.sidebar.subheader("Campaign Setup")
 
     by_size = sorted(
-        shown,
+        experiments,
         key=lambda e: (e.setup.n_start, e.setup.n_suggestions_per_iteration),
     )
     throughput = st.sidebar.radio(
         "Throughput",
         list(dict.fromkeys(_throughput(e.setup) for e in by_size)),
-        help="Starting set + rounds × suggestions per round",
+        help="Starting set + rounds × sequences chosen per round",
     )
-    shown = [e for e in shown if _throughput(e.setup) == throughput]
     experiments = [e for e in experiments if _throughput(e.setup) == throughput]
 
-    by_source = sorted(shown, key=lambda e: e.setup.n_substitutions or 0)
+    by_source = sorted(experiments, key=lambda e: e.setup.n_substitutions or 0)
     source = st.sidebar.radio(
         "Candidate generation",
         list(dict.fromkeys(_candidate_source(e.setup) for e in by_source)),
     )
-    shown = [e for e in shown if _candidate_source(e.setup) == source]
     experiments = [e for e in experiments if _candidate_source(e.setup) == source]
 
-    if not any(e.setup.use_delta_embeddings for e in shown):
-        return [e for e in experiments if not e.setup.use_delta_embeddings]
+    if not any(e.setup.use_delta_embeddings for e in experiments):
+        return experiments
     delta = st.sidebar.radio(
         "Delta embeddings",
         ["Off", "On"],
@@ -484,7 +477,6 @@ def _extract_average_hits_per_campaign(
 
 
 def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -> None:
-    st.header("Comparison")
     mode = st.radio(
         "Compare by",
         ["Surrogate Model", "Embedder"],
@@ -655,196 +647,6 @@ def _render_dataset_tab(selected_dataset: str, exps):
     st.altair_chart(chart, width="stretch")
 
 
-def _extract_cross_dataset_data(
-    group_by: str,
-    ds_groups: dict[str, list[DashboardExperimentData]],
-    dict_constructor: Callable,
-):
-    cross_dataset_data = {}  # ds_name -> n unique hits
-    all_groupable = {}  # Model Name / Embedder Name -> Experiments
-
-    if group_by == "dataset":
-        for ds_name, ds_exps in ds_groups.items():
-            cross_dataset_data[ds_name] = dict_constructor(ds_exps)
-    else:
-        for ds_name, ds_exps in ds_groups.items():
-            for exp in ds_exps:
-                key = getattr(exp, group_by)
-                if group_by == "embedder" and exp.model == "RANDOM":
-                    continue  # Exclude random surrogate models from embedder comparison
-                if key not in all_groupable:
-                    all_groupable[key] = []
-                all_groupable[key].append(exp)
-
-        for key, exps in all_groupable.items():
-            cross_dataset_data[key] = dict_constructor(exps)
-
-    return cross_dataset_data
-
-
-def _plot_cross_dataset_data(cross_dataset_data: dict, value_name: str):
-    import altair as alt
-    import pandas as pd
-
-    # Prepare data for plotting with error bars
-    plot_data = []
-    for key, values in cross_dataset_data.items():
-        if isinstance(values, dict) and "std" in values:
-            # Extract the main metric (first key that's not 'std')
-            metric_key = next(k for k in values if k != "std")
-            mean_value = values[metric_key]
-            std_value = values["std"]
-            plot_data.append(
-                {
-                    "category": key,
-                    "value": mean_value,
-                    "lower": max(0, mean_value - std_value),
-                    "upper": mean_value + std_value,
-                    "std_value": std_value,
-                }
-            )
-        else:
-            plot_data.append(
-                {"category": key, "value": values, "lower": values, "upper": values}
-            )
-
-    # Create DataFrame for the chart
-    df = pd.DataFrame(plot_data)
-    df = df.sort_values("value", ascending=False).reset_index(drop=True)
-    category_sort = df["category"].tolist()
-
-    # Create bar chart with error bars
-    bars = (
-        alt.Chart(df)
-        .mark_bar(
-            size=100,
-            filled=True,
-        )
-        .encode(
-            x=alt.X(
-                "category:N",
-                title=None,
-                axis=alt.Axis(labelAngle=-45),
-                sort=category_sort,
-            ),
-            y=alt.Y("value:Q", title=value_name),
-            color=alt.Color(
-                "category:N", scale=alt.Scale(scheme="tableau10"), legend=None
-            ),
-            tooltip=[
-                alt.Tooltip("category:N", title="Category"),
-                alt.Tooltip("value:Q", title=value_name, format=".2f"),
-                alt.Tooltip("std_value:Q", title="Std Dev", format=".2f"),
-            ],
-        )
-    )
-
-    # Create error bars
-    error_bars = (
-        alt.Chart(df)
-        .mark_errorbar(color="black")
-        .encode(
-            y=alt.Y("lower:Q", title=value_name),
-            y2=alt.Y2("upper:Q", title=None),
-            x=alt.X("category:N", sort=category_sort),
-        )
-    )
-
-    chart = bars + error_bars
-
-    chart = (
-        chart.properties(width=1200, height=800)
-        .configure_axis(labelFontSize=20, titleFontSize=28)
-        .configure_axisX(labelAngle=-45, labelLimit=0, labelOverlap=False)
-        .configure_legend(labelFontSize=24, titleFontSize=24)
-        .configure_title(fontSize=24)
-    )
-
-    st.altair_chart(chart, width="stretch")
-
-
-def _render_cross_dataset_comparison(
-    ds_groups: dict[str, list[DashboardExperimentData]],
-):
-    st.markdown("## Cross-dataset comparison")
-    mode = st.radio(
-        "Compare by",
-        ["Surrogate Model", "Embedder", "Dataset"],
-        key="CrossDatasetRadio",
-        horizontal=True,
-    )
-
-    group_by = "model" if mode == "Surrogate Model" else mode.lower()
-
-    ### AVERAGE
-    def average_dict_constructor(exps):
-        average_hits, average_hits_std = _extract_average_hits_per_campaign(exps)
-        return {"average_hits_per_campaign": average_hits, "std": average_hits_std}
-
-    cross_dataset_data_average = _extract_cross_dataset_data(
-        group_by, ds_groups, average_dict_constructor
-    )
-
-    match group_by:
-        case "model":
-            st.markdown(
-                "**Average hits found by each surrogate model across all datasets:**",
-                help="Measure of power of different surrogate models.",
-            )
-            st.markdown(
-                "*Note: Random surrogate models are excluded from the comparison.*"
-            )
-        case "embedder":
-            st.markdown(
-                "**Average hits found by each embedder model across all datasets:**",
-                help="Measure of power of different embedder models.",
-            )
-            st.markdown(
-                "*Note: Random surrogate models are excluded from the comparison.*"
-            )
-        case "dataset":
-            st.markdown(
-                "**Average hits found in each dataset across all models and embedders:**",
-                help="Measure of difficulty of the dataset for active learning simulations.",
-            )
-
-    _plot_cross_dataset_data(cross_dataset_data_average, "Average Hits")
-
-    ### UNIQUE
-    def unique_dict_constructor(exps):
-        unique_hits, n_iteration_hits_std = _extract_unique_hits(exps)
-        return {"unique_hits": len(unique_hits), "std": n_iteration_hits_std}
-
-    cross_dataset_data_unique = _extract_cross_dataset_data(
-        group_by, ds_groups, unique_dict_constructor
-    )
-
-    match group_by:
-        case "model":
-            st.markdown(
-                "**Unique hits found by each surrogate model across all datasets:**",
-                help="Measure of diversity of hits covered by different surrogate models.",
-            )
-            st.markdown(
-                "*Note: Random surrogate models are excluded from the comparison.*"
-            )
-        case "embedder":
-            st.markdown(
-                "**Unique hits found by each embedder model across all datasets:**",
-                help="Measure of diversity of hits covered by different embedder models.",
-            )
-            st.markdown(
-                "*Note: Random surrogate models are excluded from the comparison.*"
-            )
-        case "dataset":
-            st.markdown(
-                "**Unique hits found in each dataset across all models and embedders:**",
-                help="Measure of difficulty of the dataset for active learning simulations.",
-            )
-
-    _plot_cross_dataset_data(cross_dataset_data_unique, "Unique Hits")
-
-
 def main():
     # ---------------------------------------------------------------------------
     # Sidebar
@@ -883,17 +685,17 @@ def main():
     )
     exps = by_dataset[selected_dataset]
 
-    experiments = _filter_experiments(exps, compressed_data.experiments)
-    ds_groups: dict[str, list[DashboardExperimentData]] = {}
-    for exp in experiments:
-        ds_groups.setdefault(exp.dataset_id.name, []).append(exp)
-    subset = ds_groups[selected_dataset]
+    subset = _filter_experiments(exps)
 
-    main_tabs = st.tabs(
-        ["Individual Simulation Result", "Comparison", "Dataset Statistics"]
-    )
+    main_tabs = st.tabs(["Dataset statistics", "Campaigns", "Single campaign"])
 
-    with main_tabs[0]:  # Individual simulation result
+    with main_tabs[0]:
+        _render_dataset_tab(selected_dataset, exps)
+
+    with main_tabs[1]:
+        _render_inner_simulation_comparison(subset)
+
+    with main_tabs[2]:
         by_label = _by_label(subset)
         exp = by_label[st.selectbox("Select Experiment", list(by_label))]
 
@@ -907,17 +709,6 @@ def main():
             selected_label = st.selectbox("Simulation run", sorted(sim_labels.keys()))
             sim_data = sim_labels[selected_label]
             _render_single_simulation(exp, sim_data, exp.summary)
-
-    with main_tabs[1]:  # Inner simulation comparison (model/embedder)
-        _render_inner_simulation_comparison(subset)
-
-    with main_tabs[2]:  # Dataset statistics
-        _render_dataset_tab(selected_dataset, exps)
-
-    st.divider()
-
-    # Render cross-dataset comparison
-    _render_cross_dataset_comparison(ds_groups)
 
 
 if __name__ == "__main__":
