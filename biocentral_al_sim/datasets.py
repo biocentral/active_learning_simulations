@@ -45,6 +45,10 @@ class ALSimulatorDatasetDefinition(BaseModel):
         description="Restricts the sequences campaigns draw from, None for every sequence. "
         "Mutation-aware selectors need reference_fasta_path.",
     )
+    label_names: dict[str, str] | None = Field(
+        default=None,
+        description="Display name of each ordinal label",
+    )
 
     def explain_optimization_mode(self) -> str:
         match self.optimization_mode:
@@ -218,11 +222,17 @@ _DATASET_DEFINITIONS.update(
                 positions=[183, 184, 227, 228], match=SiteMatch.ONLY
             ),
         ),
-        # Ordinal ladder: 0 non-functional, 1 activity > 0, 2 activity > WT, 3 activity > A73R
+        # Ordinal ladder of nuclease activity
         ALSimulatorDataset.FLIP2_NUCB.name: ALSimulatorDatasetDefinition(
             fasta_path="datasets/engineering/flip2_NucB_max2000.fasta",
             reference_fasta_path=f"{_FLIP2_RAW}/nucb/NucB_wt.fasta",
             optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+            label_names={
+                "0": "non-functional",
+                "1": "activity > 0",
+                "2": "activity > WT",
+                "3": "activity > A73R",
+            },
             # No library structure at all -- 20_896 maximal position sets, the top 20 covering 1%
             # of the pool. Only its single substitutions are dense: 2_088 of 2_112 are labelled.
             pool_selector=MutationCount(max_mutations=1),

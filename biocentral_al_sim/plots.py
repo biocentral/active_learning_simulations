@@ -688,3 +688,131 @@ def build_cross_experiment_metric_chart(
     return alt.layer(band, line).properties(
         title=f"Cross-Experiment: {metric_name} (mean)", height=380
     )
+
+
+def _round_bin_edges(values: np.ndarray, max_bins: int = 30) -> np.ndarray:
+    """Set histogram bin edges of multiples of 1, 2, 5 and a power of 10."""
+    low, high = float(values.min()), float(values.max())
+    if high == low:
+        return np.array([low - 0.5, low + 0.5])
+    magnitude = 10 ** np.floor(np.log10((high - low) / max_bins))
+    width = next(
+        step * magnitude
+        for step in (1, 2, 5, 10)
+        if step * magnitude * max_bins >= high - low
+    )
+    # Rounded first so floating-point noise doesn't add an empty bin at either end
+    first = np.floor(np.round(low / width, 9))
+    last = np.ceil(np.round(high / width, 9))
+    decimals = max(0, int(-np.floor(np.log10(width))))
+    return np.round(np.arange(first, last + 1) * width, decimals)
+
+
+def build_label_distribution_chart(
+    labels: list[str],
+    threshold: float | None,
+    maximize: bool,
+    label_names: dict[str, str] | None = None,
+) -> alt.Chart | alt.LayerChart:
+    """Histogram of measured labels, with a dashed vertical rule for the hit threshold.
+
+    With `label_names`, each label is a category drawn as one bar in label order, and the rule
+    sits on the edge between the hit categories and the rest.
+    """
+    if label_names is None:
+        # Bin it here so we don't give every label to Vega
+        values = np.array([float(label) for label in labels])
+        counts, edges = np.histogram(values, bins=_round_bin_edges(values))
+        df = pd.DataFrame({"start": edges[:-1], "end": edges[1:], "count": counts})
+        bars = (
+            alt.Chart(df)
+            .mark_bar(color="steelblue")
+            .encode(
+                x=alt.X("start:Q", bin="binned", title="Score"),
+                x2="end:Q",
+                y=alt.Y("count:Q", title="Sequences"),
+                tooltip=[
+                    alt.Tooltip("start:Q", title="From", format=".2f"),
+                    alt.Tooltip("end:Q", title="To", format=".2f"),
+                    alt.Tooltip("count:Q", title="Sequences"),
+                ],
+            )
+        )
+        rule_data, rule_x = {"threshold": [threshold]}, alt.X("threshold:Q")
+    else:
+        try:
+            order = sorted(label_names, key=float)
+        except ValueError:
+            order = sorted(label_names)
+        names = [label_names[label] for label in order]
+        counts = pd.Series(labels).value_counts()
+        df = pd.DataFrame(
+            {"name": names, "count": [int(counts.get(label, 0)) for label in order]}
+        )
+        bars = (
+            alt.Chart(df)
+            .mark_bar(color="steelblue")
+            .encode(
+                x=alt.X(
+                    "name:N", sort=names, title="Score", axis=alt.Axis(labelAngle=0)
+                ),
+                y=alt.Y("count:Q", title="Sequences"),
+                tooltip=[
+                    alt.Tooltip("name:N", title="Label"),
+                    alt.Tooltip("count:Q", title="Sequences"),
+                ],
+            )
+        )
+        if threshold is not None:
+            hits = [
+                label
+                for label in order
+                if (
+                    float(label) >= threshold if maximize else float(label) <= threshold
+                )
+            ]
+            edge = hits[0] if maximize else hits[-1]
+            rule_data = {"name": [label_names[edge]]}
+            rule_x = alt.X("name:N", sort=names, bandPosition=0 if maximize else 1)
+    if threshold is None:
+        return bars.properties(height=320)
+    rule = (
+        alt.Chart(pd.DataFrame(rule_data))
+        .mark_rule(color="#d62728", strokeDash=[6, 4], strokeWidth=2)
+        .encode(x=rule_x)
+    )
+    return alt.layer(bars, rule).properties(height=320)
+
+
+def build_mutation_depth_chart(depths: dict[str, list[int]]) -> alt.Chart:
+    """Histogram of mutational depth for entire pool and hits."""
+    rows = []
+    for group, values in depths.items():
+        counts = pd.Series(values).value_counts()
+        rows.extend(
+            {"group": group, "depth": int(depth), "count": int(count)}
+            for depth, count in counts.items()
+        )
+    df = pd.DataFrame(rows)
+    df["share"] = df["count"] / df.groupby("group")["count"].transform("sum")
+    return (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "depth:O",
+                title="Mutational depth",
+                axis=alt.Axis(labelAngle=0),
+            ),
+            xOffset=alt.XOffset("group:N", sort=list(depths)),
+            y=alt.Y("share:Q", title="Share of group", axis=alt.Axis(format="%")),
+            color=alt.Color("group:N", sort=list(depths), title=None),
+            tooltip=[
+                alt.Tooltip("group:N", title="Group"),
+                alt.Tooltip("depth:O", title="Mutational depth"),
+                alt.Tooltip("count:Q", title="Variants"),
+                alt.Tooltip("share:Q", title="Share", format=".1%"),
+            ],
+        )
+        .properties(height=320)
+    )

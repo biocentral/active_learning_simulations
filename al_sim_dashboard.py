@@ -27,6 +27,7 @@ from biocentral_al_sim.dashboard_models import (
 from biocentral_al_sim.datasets import ALSimulatorDataset
 from biocentral_al_sim.paths import PROJECTIONS_DIR, RESULTS_DIR
 from biocentral_al_sim.settings import THROUGHPUTS
+from biocentral_al_sim.splits import substitutions
 
 st.set_page_config(page_title="AL Simulation Dashboard", layout="wide")
 
@@ -43,21 +44,15 @@ def _load_pool(selected_dataset: str) -> list[SequenceData]:
 
 
 @st.cache_data(show_spinner=True)
-def _load_pool_table(selected_dataset: str) -> pd.DataFrame:
-    df = pd.DataFrame([seq.model_dump() for seq in _load_pool(selected_dataset)])
-
-    # Convert label to float if possible
-    if "label" in df.columns:
-
-        def try_float_conversion(val):
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return val
-
-        df["label"] = df["label"].apply(try_float_conversion)
-
-    return df.drop(columns=["attributes", "embedding", "mask", "set"], errors="ignore")
+def _load_depths(selected_dataset: str) -> dict[str, int] | None:
+    """Get number of mutations of each sequence. Returns None if there is no parent sequence."""
+    reference = ALSimulatorDataset[selected_dataset].reference_sequence()
+    if reference is None:
+        return None
+    return {
+        data_point.seq_id: len(substitutions(data_point.seq, reference))
+        for data_point in _load_pool(selected_dataset)
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -96,6 +91,17 @@ def _hit_definition(exp: DashboardExperimentData) -> str:
             return f"Pool members in the bottom {exp.setup.hit_percentile:g}% of the pool's labels."
         case _:
             return "Pool members that meet the target."
+
+
+def _hit_threshold(exp: DashboardExperimentData, labels: list[float]) -> float | None:
+    """Compute hit threshold of annotations from servec's percentile rule."""
+    match exp.summary["optimization_mode"]:
+        case "MAXIMIZE":
+            return float(np.percentile(labels, 100 - exp.setup.hit_percentile))
+        case "MINIMIZE":
+            return float(np.percentile(labels, exp.setup.hit_percentile))
+        case _:
+            return None
 
 
 def _potential_hits_summary(exp: DashboardExperimentData, n_pool: int) -> str:
@@ -615,36 +621,64 @@ def _render_header(exp: DashboardExperimentData) -> None:
 
 def _render_dataset_tab(selected_dataset: str, exps):
     pool = _load_pool(selected_dataset)
+    definition = ALSimulatorDataset[selected_dataset].definition()
+    exp = exps[0]
     st.metric(
-        "**Number of potential hits:**",
-        value=_potential_hits_summary(exps[0], len(pool)),
-        help=_hit_definition(exps[0]),
+        "Number of hits",
+        value=_potential_hits_summary(exp, len(pool)),
+        help=_hit_definition(exp),
     )
-    df = _load_pool_table(selected_dataset)
-    df.insert(1, "potential_hit", df["seq_id"].isin(set(exps[0].potential_hits)))
 
-    st.markdown(
-        "**Pool**",
-        help="Sequences the campaigns drew from, potential hits first.",
+    labels = [data_point.label for data_point in pool]
+    maximize = exp.summary["optimization_mode"] == "MAXIMIZE"
+    try:
+        values = [float(label) for label in labels]
+    except (TypeError, ValueError):
+        values = None
+    threshold = None if values is None else _hit_threshold(exp, values)
+    # Labels that are not numbers are categories named after themselves
+    label_names = definition.label_names or (
+        None if values is not None else {label: label for label in set(labels)}
     )
-    st.dataframe(df.sort_values("potential_hit", ascending=False))
 
-    # Label distribution Chart
-    biotrainer_chart = BiocentralChart.label_distribution(pool)
-    st.markdown(
-        "**Pool Label Distribution**",
-        help="Distribution of all labels in the pool.",
+    st.markdown("**Label Distribution**")
+    st.altair_chart(
+        al_plots.build_label_distribution_chart(
+            labels, threshold, maximize, label_names
+        ),
+        width="stretch",
     )
-    chart = biotrainer_chart.chart
+    notes = []
+    if values is not None and label_names is None:
+        notes.append(
+            f"Mean {np.mean(values):.2f} · median {np.median(values):.2f} · "
+            f"SD {np.std(values, ddof=1):.2f}"
+        )
+    if threshold is not None:
+        value = (
+            ""
+            if label_names
+            else f" at {np.format_float_positional(threshold, precision=4, fractional=False, trim='-')}"
+        )
+        notes.append(f"Dashed line: hit threshold{value}. {_hit_definition(exp)}")
+    if notes:
+        st.caption("  \n".join(notes))
 
-    chart = (
-        chart.properties(width=1200, height=800)
-        .configure_axis(labelFontSize=20, titleFontSize=28)
-        .configure_axisX(labelAngle=-45, labelLimit=0, labelOverlap=False)
-        .configure_legend(labelFontSize=24, titleFontSize=24)
-        .configure_title(fontSize=24)
-    )
-    st.altair_chart(chart, width="stretch")
+    depths = _load_depths(selected_dataset)
+    if depths is not None:
+        st.markdown(
+            "**Mutational Depth**",
+            help="Substitutions of each variant from the dataset's parent sequence.",
+        )
+        st.altair_chart(
+            al_plots.build_mutation_depth_chart(
+                {
+                    "Full landscape": list(depths.values()),
+                    "Hits": [depths[hit] for hit in exp.potential_hits],
+                }
+            ),
+            width="stretch",
+        )
 
 
 def main():
