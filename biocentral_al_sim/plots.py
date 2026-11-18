@@ -537,156 +537,238 @@ def build_mean_metric_evolution_chart(
     )
 
 
-def build_cross_experiment_cumulative_chart(
-    experiments: dict[str, list[list[int]]],
-    targets: dict[str, int],
-) -> alt.LayerChart:
-    rows: list[dict] = []
-    rule_rows: list[dict] = []
-    for name, per_sim in experiments.items():
-        if not per_sim:
-            continue
-        max_iter = max(len(s) for s in per_sim)
-        padded = np.array(
-            [list(s) + [0] * (max_iter - len(s)) for s in per_sim], dtype=float
-        )
-        cumulative = np.cumsum(padded, axis=1)
-        mean = cumulative.mean(axis=0)
-        std = cumulative.std(axis=0)
-        for it_idx in range(max_iter):
-            rows.append(
-                {
-                    "experiment": name,
-                    "iteration": it_idx + 1,
-                    "mean": float(mean[it_idx]),
-                    "low": float(max(0.0, mean[it_idx] - std[it_idx])),
-                    "high": float(mean[it_idx] + std[it_idx]),
-                }
-            )
-        if name in targets:
-            rule_rows.append({"experiment": name, "target": targets[name]})
-
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return alt.layer(
-            alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()
-        ).properties(
-            title="Cross-Experiment: Cumulative Target Successes (mean)", height=360
-        )
-
-    band = (
-        alt.Chart(df)
-        .mark_area(opacity=0.15)
-        .encode(
-            x=alt.X("iteration:Q", title="Iteration"),
-            y="low:Q",
-            y2="high:Q",
-            color=alt.Color("experiment:N", title="Experiment"),
-        )
+def round_axis(n_rounds: int, field: str = "round") -> alt.X:
+    """x channel for campaign rounds: ticks and grid lines on whole rounds only."""
+    return alt.X(
+        f"{field}:Q",
+        title="Round",
+        scale=alt.Scale(domain=[0.5, max(n_rounds, 1) + 0.5], nice=False),
+        axis=alt.Axis(values=list(range(1, n_rounds + 1)), format="d"),
     )
-    line = (
-        alt.Chart(df)
-        .mark_line(point=True, strokeWidth=2)
+
+
+# Dashed reference lines (random model, perfect calibration), each with a legend entry
+_DASHED = alt.StrokeDash(
+    "series:N",
+    title=None,
+    scale=alt.Scale(range=[[6, 4]]),
+    legend=alt.Legend(symbolType="stroke"),
+)
+
+
+_CAP_WIDTH = 10  # about half the bar width
+
+
+def build_grouped_metric_bars(
+    replicates: pd.DataFrame,
+    baselines: pd.DataFrame,
+    titles: dict[str, str],
+    encoder_order: list[str],
+    columns: int = 2,
+) -> alt.ConcatChart:
+    """One subplot per metric. Per encoder, a bar per surrogate model with the mean over its
+    replicates, standard error whiskers and the replicates as dots. Random model as dashed line.
+
+    Args:
+        replicates: Columns metric, encoder, model, value, a row per replicate.
+        baselines: The random model's replicates, same columns; may be empty.
+        titles: Subplot title by metric, in display order.
+        encoder_order: Encoders in x axis order.
+        columns: Subplots per row.
+    """
+    summary = (
+        replicates.groupby(["metric", "encoder", "model"])["value"]
+        .agg(mean="mean", se="sem")
+        .fillna({"se": 0.0})
+        .reset_index()
+    )
+    summary["low"] = summary["mean"] - summary["se"]
+    summary["high"] = summary["mean"] + summary["se"]
+    x = alt.X(
+        "encoder:N",
+        title="Encoder",
+        sort=encoder_order,
+        # Streamlit's chart theme otherwise hides labels whose boxes overlap
+        axis=alt.Axis(labelAngle=-30, labelLimit=220, labelOverlap=False),
+    )
+    offset = alt.XOffset("model:N")
+    subplots = []
+    for metric, title in titles.items():
+        means = alt.Chart(summary[summary["metric"] == metric]).encode(
+            x=x, xOffset=offset
+        )
+        layers = [
+            means.mark_bar().encode(
+                y=alt.Y("mean:Q", title=None),
+                color=alt.Color("model:N", title="Surrogate model"),
+                tooltip=[
+                    alt.Tooltip("encoder:N", title="Encoder"),
+                    alt.Tooltip("model:N", title="Model"),
+                    alt.Tooltip("mean:Q", title="Mean", format=".3g"),
+                    alt.Tooltip("se:Q", title="Standard error", format=".3g"),
+                ],
+            ),
+            # Drawn as a rule and two caps, each offset like the bars
+            means.mark_rule(color="black").encode(
+                y=alt.Y("low:Q", title=None), y2="high:Q"
+            ),
+            means.mark_tick(color="black", size=_CAP_WIDTH, thickness=1.5).encode(
+                y="low:Q"
+            ),
+            means.mark_tick(color="black", size=_CAP_WIDTH, thickness=1.5).encode(
+                y="high:Q"
+            ),
+            alt.Chart(replicates[replicates["metric"] == metric])
+            .mark_circle(color="black", size=20, opacity=0.6)
+            .encode(
+                x=x,
+                xOffset=offset,
+                y="value:Q",
+                tooltip=[
+                    alt.Tooltip("model:N", title="Model"),
+                    alt.Tooltip("value:Q", title="Replicate", format=".3g"),
+                ],
+            ),
+        ]
+        baseline = baselines[baselines["metric"] == metric]
+        if not baseline.empty:
+            layers.append(
+                alt.Chart(
+                    pd.DataFrame(
+                        {
+                            "value": [baseline["value"].mean()],
+                            "series": ["Random model"],
+                        }
+                    )
+                )
+                .mark_rule(color="grey", strokeWidth=2)
+                .encode(
+                    y="value:Q",
+                    strokeDash=_DASHED,
+                    tooltip=[
+                        alt.Tooltip("value:Q", title="Random model", format=".3g")
+                    ],
+                )
+            )
+        subplots.append(
+            alt.layer(*layers).properties(title=title, width=840 // columns, height=260)
+        )
+    return alt.concat(*subplots, columns=columns)
+
+
+def build_rounds_by_model_chart(
+    rounds: pd.DataFrame,
+    baseline: pd.DataFrame,
+    y_title: str,
+    encoder_order: list[str],
+    log_y: bool = False,
+) -> alt.FacetChart:
+    """A subplot per surrogate model, and per panel if `rounds` has a panel column, with a line
+    per encoder and the random model as a dashed line in each.
+
+    Args:
+        rounds: Columns model, encoder, round, value and optionally panel.
+        baseline: The random model's rows, same columns; may be empty.
+        y_title: Title of the y axis.
+        encoder_order: Encoders in legend order.
+        log_y: Draw the y axis on a log scale.
+    """
+    panels = ["panel"] if "panel" in rounds.columns else []
+    n_rounds = int(rounds["round"].max()) if not rounds.empty else 1
+    y_scale = alt.Scale(type="log") if log_y else alt.Undefined
+    base = alt.Chart().encode(
+        x=round_axis(n_rounds), y=alt.Y("value:Q", title=y_title, scale=y_scale)
+    )
+    layers = [
+        base.transform_filter(alt.datum.series == "encoder")
+        .mark_line(point=True)
         .encode(
-            x="iteration:Q",
-            y=alt.Y("mean:Q", title="Cumulative Target Successes (mean)"),
-            color=alt.Color("experiment:N", title="Experiment"),
+            color=alt.Color("encoder:N", title="Encoder", sort=encoder_order),
             tooltip=[
-                alt.Tooltip("experiment:N", title="Experiment"),
-                alt.Tooltip("iteration:Q", title="Iteration"),
-                alt.Tooltip("mean:Q", title="Mean", format=".2f"),
-                alt.Tooltip("low:Q", title="-1 SD", format=".2f"),
-                alt.Tooltip("high:Q", title="+1 SD", format=".2f"),
+                alt.Tooltip("encoder:N", title="Encoder"),
+                alt.Tooltip("round:Q", title="Round"),
+                alt.Tooltip("value:Q", title=y_title, format=".3g"),
             ],
         )
-    )
-
-    layers: list[alt.Chart] = [band, line]
-    if rule_rows:
-        rule_df = pd.DataFrame(rule_rows)
-        rules = (
-            alt.Chart(rule_df)
-            .mark_rule(strokeDash=[6, 4], opacity=0.6)
+    ]
+    data = rounds.assign(series="encoder")
+    if not baseline.empty:
+        mean = baseline.groupby([*panels, "round"], as_index=False)["value"].mean()
+        # Repeated per surrogate model, so the baseline shows in every subplot
+        data = pd.concat(
+            [data]
+            + [
+                mean.assign(model=model, series="Random model")
+                for model in rounds["model"].unique()
+            ],
+            ignore_index=True,
+        )
+        layers.append(
+            base.transform_filter(alt.datum.series == "Random model")
+            .mark_line(color="grey")
             .encode(
-                y="target:Q",
-                color=alt.Color("experiment:N", title="Experiment"),
+                strokeDash=_DASHED,
                 tooltip=[
-                    alt.Tooltip("experiment:N", title="Experiment"),
-                    alt.Tooltip("target:Q", title="Target"),
+                    alt.Tooltip("round:Q", title="Round"),
+                    alt.Tooltip("value:Q", title="Random model", format=".3g"),
                 ],
             )
         )
-        layers.append(rules)
-
-    return alt.layer(*layers).properties(
-        title="Cross-Experiment: Cumulative Target Successes (mean)", height=380
+    facets = {"column": alt.Column("model:N", title=None)}
+    if panels:
+        facets["row"] = alt.Row(
+            "panel:N", title=None, sort=list(dict.fromkeys(rounds["panel"]))
+        )
+    return (
+        alt.layer(*layers, data=data).properties(width=300, height=220).facet(**facets)
     )
 
 
-def build_cross_experiment_metric_chart(
-    experiments: dict[str, list[list[float]]],
-    metric_name: str,
-) -> alt.LayerChart:
-    rows: list[dict] = []
-    for name, per_sim in experiments.items():
-        if not per_sim:
-            continue
-        max_iter = max(len(m) for m in per_sim)
-        padded = np.array(
-            [list(m) + [np.nan] * (max_iter - len(m)) for m in per_sim], dtype=float
-        )
-        mean = np.nanmean(padded, axis=0)
-        std = np.nanstd(padded, axis=0)
-        for it_idx in range(max_iter):
-            rows.append(
-                {
-                    "experiment": name,
-                    "iteration": it_idx + 1,
-                    "mean": float(mean[it_idx]) if not np.isnan(mean[it_idx]) else None,
-                    "low": float(mean[it_idx] - std[it_idx])
-                    if not np.isnan(mean[it_idx])
-                    else None,
-                    "high": float(mean[it_idx] + std[it_idx])
-                    if not np.isnan(mean[it_idx])
-                    else None,
-                }
-            )
+def build_calibration_chart(
+    curves: pd.DataFrame, encoder_order: list[str]
+) -> alt.FacetChart:
+    """Observed against expected interval coverage, a subplot per surrogate model with a line
+    per encoder and the diagonal for theoretical perfect calibration.
 
-    df = pd.DataFrame(rows).dropna()
-    if df.empty:
-        return alt.layer(
-            alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()
-        ).properties(title=f"Cross-Experiment: {metric_name} (mean)", height=360)
-
-    band = (
-        alt.Chart(df)
-        .mark_area(opacity=0.15)
-        .encode(
-            x=alt.X("iteration:Q", title="Iteration"),
-            y="low:Q",
-            y2="high:Q",
-            color=alt.Color("experiment:N", title="Experiment"),
-        )
+    Args:
+        curves: Columns model, encoder, expected, observed.
+        encoder_order: Encoders in legend order.
+    """
+    diagonal = pd.DataFrame({"expected": [0.0, 1.0], "observed": [0.0, 1.0]})
+    data = pd.concat(
+        [curves.assign(series="encoder")]
+        + [
+            diagonal.assign(model=model, series="Perfect calibration")
+            for model in curves["model"].unique()
+        ],
+        ignore_index=True,
     )
-    line = (
-        alt.Chart(df)
-        .mark_line(point=True, strokeWidth=2)
+    scale, axis = alt.Scale(domain=[0, 1]), alt.Axis(format="%")
+    base = alt.Chart().encode(
+        x=alt.X("expected:Q", title="Expected coverage", scale=scale, axis=axis),
+        y=alt.Y("observed:Q", title="Observed coverage", scale=scale, axis=axis),
+    )
+    lines = (
+        base.transform_filter(alt.datum.series == "encoder")
+        .mark_line(point=True)
         .encode(
-            x="iteration:Q",
-            y=alt.Y("mean:Q", title=f"{metric_name} (mean)"),
-            color=alt.Color("experiment:N", title="Experiment"),
+            color=alt.Color("encoder:N", title="Encoder", sort=encoder_order),
             tooltip=[
-                alt.Tooltip("experiment:N", title="Experiment"),
-                alt.Tooltip("iteration:Q", title="Iteration"),
-                alt.Tooltip("mean:Q", title="Mean", format=".4f"),
-                alt.Tooltip("low:Q", title="-1 SD", format=".4f"),
-                alt.Tooltip("high:Q", title="+1 SD", format=".4f"),
+                alt.Tooltip("encoder:N", title="Encoder"),
+                alt.Tooltip("expected:Q", title="Expected", format=".0%"),
+                alt.Tooltip("observed:Q", title="Observed", format=".1%"),
             ],
         )
     )
-
-    return alt.layer(band, line).properties(
-        title=f"Cross-Experiment: {metric_name} (mean)", height=380
+    reference = (
+        base.transform_filter(alt.datum.series == "Perfect calibration")
+        .mark_line(color="grey")
+        .encode(strokeDash=_DASHED)
+    )
+    return (
+        alt.layer(lines, reference, data=data)
+        .properties(width=300, height=260)
+        .facet(column=alt.Column("model:N", title=None))
     )
 
 

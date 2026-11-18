@@ -9,17 +9,20 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-from biocentral_api import ProjectionResult
+from biocentral_api import CommonEmbedder, ProjectionResult
 from biocentral_vis import BiocentralChart
 from biotrainer_core.data_classes import SequenceData
 
 from biocentral_al_sim import plots as al_plots
+from biocentral_al_sim.compress_reports import percentage_cutoff
 from biocentral_al_sim.dashboard_models import (
+    UNCERTAINTY_CALIBRATION_LEVELS,
     DashboardCampaignSetup,
     DashboardCompressedData,
     DashboardExperimentData,
@@ -30,6 +33,22 @@ from biocentral_al_sim.settings import THROUGHPUTS
 from biocentral_al_sim.splits import substitutions
 
 st.set_page_config(page_title="AL Simulation Dashboard", layout="wide")
+
+
+ENCODER_LABELS = {
+    CommonEmbedder.RANDOM_EMBEDDER.value: "random",
+    CommonEmbedder.LENGTH_EMBEDDER.value: "length",
+    CommonEmbedder.ONE_HOT_ENCODING.value: "OHE",
+    CommonEmbedder.BLOSUM62.value: "Blosum62",
+    CommonEmbedder.ESM2_8M.value: "ESM-2 (8M)",
+    CommonEmbedder.ESM2_650M.value: "ESM-2 (650M)",
+    CommonEmbedder.ProtT5.value: "ProtT5",
+}
+ENCODER_ORDER = list(ENCODER_LABELS.values())
+
+
+def _get_encoder_label(embedder: str) -> str:
+    return ENCODER_LABELS.get(embedder, embedder)
 
 
 @st.cache_data(show_spinner=True)
@@ -83,7 +102,7 @@ def _load_projection(
     return None
 
 
-def _hit_definition(exp: DashboardExperimentData) -> str:
+def _describe_hits(exp: DashboardExperimentData) -> str:
     match exp.summary["optimization_mode"]:
         case "MAXIMIZE":
             return f"Pool members in the top {exp.setup.hit_percentile:g}% of the pool's labels."
@@ -93,7 +112,9 @@ def _hit_definition(exp: DashboardExperimentData) -> str:
             return "Pool members that meet the target."
 
 
-def _hit_threshold(exp: DashboardExperimentData, labels: list[float]) -> float | None:
+def _compute_hit_threshold(
+    exp: DashboardExperimentData, labels: list[float]
+) -> float | None:
     """Compute hit threshold of annotations from servec's percentile rule."""
     match exp.summary["optimization_mode"]:
         case "MAXIMIZE":
@@ -104,19 +125,19 @@ def _hit_threshold(exp: DashboardExperimentData, labels: list[float]) -> float |
             return None
 
 
-def _potential_hits_summary(exp: DashboardExperimentData, n_pool: int) -> str:
+def _summarize_potential_hits(exp: DashboardExperimentData, n_pool: int) -> str:
     n_potential_hits = len(exp.potential_hits)
     return f"{n_potential_hits} ({100 * n_potential_hits / n_pool:.2f} % of the pool)"
 
 
-def _candidate_source(setup: DashboardCampaignSetup) -> str:
+def _describe_candidate_source(setup: DashboardCampaignSetup) -> str:
     if not setup.generate_candidates:
         return "Pool"
     plural = "" if setup.n_substitutions == 1 else "s"
     return f"Generated ({setup.n_substitutions} substitution{plural})"
 
 
-def _stopping_criteria(setup: DashboardCampaignSetup) -> str:
+def _describe_stopping_criteria(setup: DashboardCampaignSetup) -> str:
     criteria = []
     if setup.max_labels_budget is not None:
         criteria.append(f"a budget of {setup.max_labels_budget} labels")
@@ -129,7 +150,7 @@ def _stopping_criteria(setup: DashboardCampaignSetup) -> str:
     return "Stops at whichever comes first: " + ", ".join(criteria)
 
 
-def _throughput(setup: DashboardCampaignSetup) -> str:
+def _describe_throughput(setup: DashboardCampaignSetup) -> str:
     """Shape of the campaign, led by the name of the throughput preset it follows."""
     shape = (
         f"{setup.n_start} + {setup.n_max_iterations} × "
@@ -149,7 +170,7 @@ def _throughput(setup: DashboardCampaignSetup) -> str:
     return shape
 
 
-def _arm(exp: DashboardExperimentData) -> tuple:
+def _get_arm(exp: DashboardExperimentData) -> tuple:
     return exp.dataset_id, exp.embedder, exp.model
 
 
@@ -166,17 +187,23 @@ def _filter_experiments(
     )
     throughput = st.sidebar.radio(
         "Throughput",
-        list(dict.fromkeys(_throughput(e.setup) for e in by_size)),
+        list(dict.fromkeys(_describe_throughput(e.setup) for e in by_size)),
         help="Starting set + rounds × sequences chosen per round",
     )
-    experiments = [e for e in experiments if _throughput(e.setup) == throughput]
+    experiments = [
+        e for e in experiments if _describe_throughput(e.setup) == throughput
+    ]
 
     by_source = sorted(experiments, key=lambda e: e.setup.n_substitutions or 0)
     source = st.sidebar.radio(
         "Candidate generation",
-        list(dict.fromkeys(_candidate_source(e.setup) for e in by_source)),
+        list(dict.fromkeys(_describe_candidate_source(e.setup) for e in by_source)),
+        help="Pool: random unseen variants of the landscape. Generated: mutants of the "
+        "variants measured so far.",
     )
-    experiments = [e for e in experiments if _candidate_source(e.setup) == source]
+    experiments = [
+        e for e in experiments if _describe_candidate_source(e.setup) == source
+    ]
 
     if not any(e.setup.use_delta_embeddings for e in experiments):
         return experiments
@@ -187,21 +214,21 @@ def _filter_experiments(
     )
     if delta == "Off":
         return [e for e in experiments if not e.setup.use_delta_embeddings]
-    with_delta = {_arm(e) for e in experiments if e.setup.use_delta_embeddings}
+    with_delta = {_get_arm(e) for e in experiments if e.setup.use_delta_embeddings}
     return [
         e
         for e in experiments
-        if e.setup.use_delta_embeddings or _arm(e) not in with_delta
+        if e.setup.use_delta_embeddings or _get_arm(e) not in with_delta
     ]
 
 
-def _by_label(
+def _index_by_label(
     exps: list[DashboardExperimentData],
 ) -> dict[str, DashboardExperimentData]:
     """Experiments by model and embedder. Ambiguous labels fall back to the file name."""
     exps = sorted(exps, key=lambda e: (e.model, e.embedder))
     labels = [
-        f"{e.model} · {e.embedder}"
+        f"{e.model} · {_get_encoder_label(e.embedder)}"
         + (" · delta" if e.setup.use_delta_embeddings else "")
         for e in exps
     ]
@@ -468,133 +495,288 @@ def _extract_unique_hits(exps: list[DashboardExperimentData]) -> tuple[set[str],
     return all_unique_hits, bootstrap_std
 
 
-def _extract_average_hits_per_campaign(
-    exps: list[DashboardExperimentData],
-) -> tuple[float, float]:
-    all_single_sims = []
-    for e in exps:
-        all_single_sims.extend(e.single_sims)
-    n_all_hits_list = [
-        sum(list(map(len, single_sim.iteration_hits))) for single_sim in all_single_sims
-    ]
-    total_hits_mean = round(float(np.mean(n_all_hits_list)), 3)
-    total_hits_std = float(np.std(n_all_hits_list))
-    return total_hits_mean, total_hits_std
+def _get_round_errors(
+    exp: DashboardExperimentData, subset: str, error_metric: str
+) -> list[list[float]]:
+    """Per-round error of each replicate on its suggestions (`subset="suggestions"`) or every scored candidate (`subset="scored"`).
+    Accuracy for discrete targets.
+    """
+    if exp.per_sim_round_errors is None:
+        if subset == "suggestions":
+            return exp.per_sim_metrics_suggestions
+        return exp.per_sim_metrics_total
+    return exp.per_sim_round_errors[f"{error_metric.lower()}_{subset}"]
 
 
-def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -> None:
-    mode = st.radio(
-        "Compare by",
-        ["Surrogate Model", "Embedder"],
-        key="InnerSimulationRadio",
-        horizontal=True,
+def _collect_replicate_metrics(
+    exp: DashboardExperimentData, error_metric: str
+) -> dict[str, Sequence[float | None]]:
+    """Each replicate's total hits, hit rate, and best label (unless target is discrete),
+    and the final round's prediction metrics, with `error_metric` as error. A ranking
+    metric is None for a replicate whose predictions cannot rank."""
+    hits = [sum(n_hits) for n_hits in exp.per_sim_n_hits]
+    metrics: dict[str, Sequence[float | None]] = {
+        "total_hits": hits,
+        "hit_rate": [
+            n_hits / n_suggestions if n_suggestions else 0.0
+            for n_hits, n_suggestions in zip(hits, exp.per_sim_n_suggestions)
+        ],
+    }
+    if exp.per_sim_best_label is not None:
+        metrics["best_label"] = exp.per_sim_best_label
+    final_round_metrics = exp.per_sim_final_round_metrics or []
+    for name in (final_round_metrics or [{}])[0]:
+        if name in ("mae", "rmse") and name != error_metric.lower():
+            continue
+        key = "final_error" if name in ("mae", "rmse") else f"final_{name}"
+        metrics[key] = [replicate[name] for replicate in final_round_metrics]
+    return metrics
+
+
+def _build_replicate_frame(
+    exps: list[DashboardExperimentData], error_metric: str
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "metric": metric,
+                "encoder": _get_encoder_label(exp.embedder),
+                "model": exp.model,
+                "value": v,
+            }
+            for exp in exps
+            for metric, values in _collect_replicate_metrics(exp, error_metric).items()
+            for v in values
+            if v is not None
+        ],
+        columns=["metric", "encoder", "model", "value"],
     )
 
-    group_by = "model" if mode == "Surrogate Model" else "embedder"
 
-    groups: dict[str, list[DashboardExperimentData]] = {}
-    for exp in subset:
-        if group_by == "embedder" and exp.model == "RANDOM":
-            continue  # Exclude random surrogate models from embedder comparison
-        key = getattr(exp, group_by)
-        if key not in groups:
-            groups[key] = []
-        groups[key].append(exp)
+def _average_per_round(
+    per_sim: Sequence[Sequence[float]], cumulative: bool
+) -> list[float]:
+    """Per-round mean over replicates. Stopped replicates' totals are kept in cumulative series."""
+    n_rounds = max(map(len, per_sim), default=0)
+    padded = []
+    for values in per_sim:
+        values = np.cumsum(values).tolist() if cumulative else list(values)
+        fill = values[-1] if cumulative and values else np.nan
+        padded.append(values + [fill] * (n_rounds - len(values)))
+    return np.nanmean(np.array(padded, dtype=float), axis=0).tolist()
 
-    comparison_data = []
-    cross_cum_inputs = {}
-    cross_metric_inputs = {}
-    cross_targets = {}
-    metric_names = set()
 
-    for key, exps in groups.items():
-        all_hits = sum(e.aggregated_hits for e in exps)
-        all_suggestions = sum(e.aggregated_suggestions for e in exps)
-        all_unique_hits, unique_hits_std = _extract_unique_hits(exps)
-        findable_hits = set(exps[0].potential_hits) - set.intersection(
-            *(set(e.start_set_hits) for e in exps)
+def _build_rounds_frame(
+    subset: list[DashboardExperimentData],
+    per_sim: Callable[[DashboardExperimentData], Sequence[Sequence[float]] | None],
+    cumulative: bool,
+) -> pd.DataFrame:
+    """Each campaign's mean per round, leaving out campaigns without the series."""
+    return pd.DataFrame(
+        [
+            {
+                "model": exp.model,
+                "encoder": _get_encoder_label(exp.embedder),
+                "round": i + 1,
+                "value": v,
+            }
+            for exp in subset
+            if (runs := per_sim(exp)) is not None
+            for i, v in enumerate(_average_per_round(runs, cumulative))
+        ],
+        columns=["model", "encoder", "round", "value"],
+    )
+
+
+def _build_calibration_frame(exps: list[DashboardExperimentData]) -> pd.DataFrame:
+    """Observed coverage per calibration level, averaged over replicates of each campaign."""
+    return pd.DataFrame(
+        [
+            {
+                "model": exp.model,
+                "encoder": _get_encoder_label(exp.embedder),
+                "expected": level,
+                "observed": observed,
+            }
+            for exp in exps
+            if exp.per_sim_calibration is not None
+            for level, observed in zip(
+                UNCERTAINTY_CALIBRATION_LEVELS, np.mean(exp.per_sim_calibration, axis=0)
+            )
+        ],
+        columns=["model", "encoder", "expected", "observed"],
+    )
+
+
+def _describe_ndcg_cutoffs(exps: list[DashboardExperimentData], percentage: int) -> str:
+    """The n of NDCG@percentage% over the experiments' replicates, as a value or a range."""
+    ns = sorted(
+        {
+            percentage_cutoff(n_scored, percentage)
+            for exp in exps
+            for n_scored in exp.per_sim_final_round_scored
+        }
+    )
+    return f"n = {ns[0]}" if ns[0] == ns[-1] else f"n = {ns[0]}–{ns[-1]}"
+
+
+def _render_campaigns_tab(
+    subset: list[DashboardExperimentData], error_metric: str
+) -> None:
+    random = [exp for exp in subset if exp.model == "RANDOM"]
+    surrogates = [exp for exp in subset if exp.model != "RANDOM"]
+    maximize = subset[0].summary["optimization_mode"] == "MAXIMIZE"
+    metric_name = "Accuracy" if subset[0].summary["is_discrete"] else error_metric
+    hit_titles = {
+        "total_hits": "Total Hits",
+        "hit_rate": "Hit Rate",
+        "best_label": "Maximum Fitness Achieved"
+        if maximize
+        else "Minimum Label Achieved",
+    }
+    prediction_titles = {
+        "final_error": metric_name,
+        "final_spearman": "Spearman Correlation",
+        "final_ndcg@10": "NDCG@10",
+        "final_ndcg@96": "NDCG@96",
+        "final_ndcg@1%": f"NDCG@1% ({_describe_ndcg_cutoffs(subset, 1)})",
+        "final_ndcg@10%": f"NDCG@10% ({_describe_ndcg_cutoffs(subset, 10)})",
+    }
+    replicates = _build_replicate_frame(surrogates, error_metric)
+    baselines = _build_replicate_frame(random, error_metric)
+    present = set(replicates["metric"])
+    n_replicates = sorted({len(exp.per_sim_n_hits) for exp in subset})
+    random_note = (
+        " Dashed line: the random model, which runs with one-hot encoding only."
+        if random
+        else ""
+    )
+
+    st.subheader("Hits")
+    st.altair_chart(
+        al_plots.build_grouped_metric_bars(
+            replicates,
+            baselines,
+            {
+                metric: title
+                for metric, title in hit_titles.items()
+                if metric in present
+            },
+            ENCODER_ORDER,
+            columns=3,
+        )
+    )
+    st.caption(
+        f"Bars: mean over each campaign's {'/'.join(map(str, n_replicates))} replicates, "
+        "dots: the replicates, whiskers: standard error." + random_note
+    )
+
+    prediction_titles = {
+        metric: title
+        for metric, title in prediction_titles.items()
+        if metric in present
+    }
+    if prediction_titles:
+        st.subheader("Predictions on the Whole Landscape\\*")
+        st.altair_chart(
+            al_plots.build_grouped_metric_bars(
+                replicates, baselines, prediction_titles, ENCODER_ORDER, columns=2
+            )
+        )
+        st.caption(
+            "\\* For now on the variants the final round's model scored rather than the "
+            "whole landscape: with pool candidates a random sample of up to 1,000 unseen "
+            "variants, with generated candidates the generated mutants. NDCG ranks them by "
+            "prediction, with the labels min-max scaled to [0, 1] as gains; NDCG@k% looks at "
+            "the top k% of them. Spearman and NDCG leave out replicates whose predictions take "
+            "at most two values (the GP with the length embedder). Bars, dots and whiskers as "
+            "above." + random_note
         )
 
-        all_is_success = [s for e in exps for s in e.per_sim_is_success]
-        total_campaigns = len(all_is_success)
+    st.subheader("Cumulative Hits")
+    st.altair_chart(
+        al_plots.build_rounds_by_model_chart(
+            _build_rounds_frame(
+                surrogates, lambda exp: exp.per_sim_n_hits, cumulative=True
+            ),
+            _build_rounds_frame(
+                random, lambda exp: exp.per_sim_n_hits, cumulative=True
+            ),
+            "Cumulative hits (mean)",
+            ENCODER_ORDER,
+        )
+    )
 
-        avg_hits, _ = _extract_average_hits_per_campaign(exps)
-        row = {
-            mode: key,
-            "Total Hits": all_hits,
-            "Unique Hits / Findable": f"{len(all_unique_hits)} / {len(findable_hits)}",
-            "Unique Hits Std. Dev.": f"{unique_hits_std:.2f}",
-            "Number of Campaigns": total_campaigns,
-            "Total Suggestions": all_suggestions,
-            "Hit Rate": f"{all_hits / all_suggestions:.2%}"
-            if all_suggestions > 0
-            else "0%",
-            "Avg. Hits per Campaign": f"{avg_hits:.2f}",
-        }
-
-        # Success needs a hit threshold to be measured against
-        if any(e.summary["n_hits_threshold"] is not None for e in exps):
-            conv_speeds = []
-            for e in exps:
-                target_threshold = e.summary["n_hits_threshold"]
-                for i, is_succ in enumerate(e.per_sim_is_success):
-                    if is_succ:
-                        cumsum = np.cumsum(e.per_sim_n_hits[i])
-                        converged_at = np.where(cumsum >= target_threshold)[0]
-                        if len(converged_at) > 0:
-                            conv_speeds.append(int(converged_at[0]) + 1)
-
-            avg_conv = np.mean(conv_speeds) if conv_speeds else None
-            row["Percentage of successful campaigns"] = (
-                f"{sum(all_is_success) / total_campaigns:.1%}"
-                if total_campaigns > 0
-                else "0.0%"
+    if subset[0].per_sim_suggested_label_means is not None:
+        st.subheader("Mean Label of Chosen Sequences")
+        st.altair_chart(
+            al_plots.build_rounds_by_model_chart(
+                _build_rounds_frame(
+                    surrogates,
+                    lambda exp: exp.per_sim_suggested_label_means,
+                    cumulative=False,
+                ),
+                _build_rounds_frame(
+                    random,
+                    lambda exp: exp.per_sim_suggested_label_means,
+                    cumulative=False,
+                ),
+                "Mean label (mean)",
+                ENCODER_ORDER,
             )
-            row["Avg. Convergence Iteration"] = (
-                f"{avg_conv:.2f}" if avg_conv is not None else "N/A"
-            )
-        comparison_data.append(row)
+        )
 
-    if group_by == "embedder":
-        st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
-    st.table(pd.DataFrame(comparison_data))
+    panels = {
+        "Chosen sequences": lambda exp: _get_round_errors(
+            exp, "suggestions", error_metric
+        ),
+        "Unseen variants": lambda exp: _get_round_errors(exp, "scored", error_metric),
+    }
+
+    def build_panel_frame(exps: list[DashboardExperimentData]) -> pd.DataFrame:
+        return pd.concat(
+            [
+                _build_rounds_frame(exps, per_sim, cumulative=False).assign(panel=panel)
+                for panel, per_sim in panels.items()
+            ],
+            ignore_index=True,
+        )
+
+    st.subheader(f"{metric_name} Evolution")
+    st.altair_chart(
+        al_plots.build_rounds_by_model_chart(
+            build_panel_frame(surrogates),
+            build_panel_frame(random),
+            f"{metric_name} (mean)",
+            ENCODER_ORDER,
+            log_y=metric_name != "Accuracy",
+        )
+    )
     st.caption(
-        "Findable hits leave out potential hits that every campaign of the group started "
-        "with. Totals and unique hits grow with the number of campaigns, so compare them "
-        "only between groups of equal size."
+        ("y-axis logarithmic. " if metric_name != "Accuracy" else "")
+        + "Unseen variants: the candidates each round's model scored before choosing the "
+        "sequences to measure. With pool candidates, a random sample of up to 1,000 variants the model "
+        "has not seen; with generated candidates, mutants of the variants it has measured. "
+        "The server does not record the error on the variants the model has learned."
     )
 
-    st.subheader("Visual Comparison")
-    for exp in subset:
-        cross_cum_inputs[exp.name] = exp.per_sim_n_hits
-        cross_metric_inputs[exp.name] = exp.per_sim_metrics_total
-        if exp.summary["n_hits_threshold"] is not None:
-            cross_targets[exp.name] = exp.summary["n_hits_threshold"]
-        metric_names.add("Accuracy" if exp.summary["is_discrete"] else "MAE")
-
-    metric_name = ", ".join(sorted(metric_names)) if metric_names else "Metric"
-
-    st.subheader("Cumulative target successes — mean per experiment")
-    st.altair_chart(
-        al_plots.build_cross_experiment_cumulative_chart(
-            cross_cum_inputs, cross_targets
-        ).interactive(),
-        width="stretch",
-    )
-    st.subheader(f"Model performance ({metric_name}) — mean per experiment")
-    st.altair_chart(
-        al_plots.build_cross_experiment_metric_chart(
-            cross_metric_inputs, metric_name
-        ).interactive(),
-        width="stretch",
-    )
+    calibration = _build_calibration_frame(surrogates)
+    if not calibration.empty:
+        st.subheader("Uncertainty Calibration")
+        st.altair_chart(al_plots.build_calibration_chart(calibration, ENCODER_ORDER))
+        st.caption(
+            "Share of the candidates each round's model scored whose label lies within the "
+            "central interval of the predicted normal distribution, pooled over rounds and "
+            "averaged over replicates. Below the diagonal, the uncertainties are too narrow. "
+            "The random model's uncertainty is a constant, so it is left out."
+        )
 
 
 def _render_header(exp: DashboardExperimentData) -> None:
     summary = exp.summary
     st.markdown(f"### `{exp.name}`")
     cols_row1 = st.columns(3)
-    cols_row1[0].metric("Embedder", exp.embedder)
+    cols_row1[0].metric("Embedder", _get_encoder_label(exp.embedder))
     cols_row1[1].metric("Model", exp.model)
     cols_row1[2].metric("Mode", str(summary["optimization_mode"]))
 
@@ -610,11 +792,11 @@ def _render_header(exp: DashboardExperimentData) -> None:
     cols_setup = st.columns(4)
     cols_setup[0].metric("Starting set", setup.n_start)
     cols_setup[1].metric("Suggestions per round", setup.n_suggestions_per_iteration)
-    cols_setup[2].metric("Candidates", _candidate_source(setup))
+    cols_setup[2].metric("Candidates", _describe_candidate_source(setup))
     cols_setup[3].metric(
         "Delta embeddings", "On" if setup.use_delta_embeddings else "Off"
     )
-    st.caption(_stopping_criteria(setup))
+    st.caption(_describe_stopping_criteria(setup))
     if summary.get("discrete_targets"):
         st.caption(f"Discrete targets: {', '.join(summary['discrete_targets'])}")
 
@@ -625,17 +807,17 @@ def _render_dataset_tab(selected_dataset: str, exps):
     exp = exps[0]
     st.metric(
         "Number of hits",
-        value=_potential_hits_summary(exp, len(pool)),
-        help=_hit_definition(exp),
+        value=_summarize_potential_hits(exp, len(pool)),
+        help=_describe_hits(exp),
     )
 
-    labels = [data_point.label for data_point in pool]
+    labels = [data_point.label for data_point in pool if data_point.label is not None]
     maximize = exp.summary["optimization_mode"] == "MAXIMIZE"
     try:
         values = [float(label) for label in labels]
-    except (TypeError, ValueError):
+    except ValueError:
         values = None
-    threshold = None if values is None else _hit_threshold(exp, values)
+    threshold = None if values is None else _compute_hit_threshold(exp, values)
     # Labels that are not numbers are categories named after themselves
     label_names = definition.label_names or (
         None if values is not None else {label: label for label in set(labels)}
@@ -660,7 +842,7 @@ def _render_dataset_tab(selected_dataset: str, exps):
             if label_names
             else f" at {np.format_float_positional(threshold, precision=4, fractional=False, trim='-')}"
         )
-        notes.append(f"Dashed line: hit threshold{value}. {_hit_definition(exp)}")
+        notes.append(f"Dashed line: hit threshold{value}. {_describe_hits(exp)}")
     if notes:
         st.caption("  \n".join(notes))
 
@@ -720,6 +902,8 @@ def main():
     exps = by_dataset[selected_dataset]
 
     subset = _filter_experiments(exps)
+    st.sidebar.subheader("Display")
+    error_metric = st.sidebar.radio("Error metric", ["RMSE", "MAE"], horizontal=True)
 
     main_tabs = st.tabs(["Dataset statistics", "Campaigns", "Single campaign"])
 
@@ -727,10 +911,10 @@ def main():
         _render_dataset_tab(selected_dataset, exps)
 
     with main_tabs[1]:
-        _render_inner_simulation_comparison(subset)
+        _render_campaigns_tab(subset, error_metric)
 
     with main_tabs[2]:
-        by_label = _by_label(subset)
+        by_label = _index_by_label(subset)
         exp = by_label[st.selectbox("Select Experiment", list(by_label))]
 
         _render_header(exp)

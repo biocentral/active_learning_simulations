@@ -276,11 +276,6 @@ def compress_reports(run_name: str):
         model_name = multi.model_type().value
         split_id = multi.split_id()
         potential_hits = multi.potential_hits()
-        start_sets = [
-            set(ssr.al_simulation_config.start_ids or [])
-            for ssr in multi.simulation_results
-        ]
-        start_set_hits = sorted(set(potential_hits).intersection(*start_sets))
         if dataset_name not in labels_by_dataset:
             labels_by_dataset[dataset_name] = dataset_labels(dataset_name)
         check_replicates(multi, labels_by_dataset[dataset_name], path.name)
@@ -342,7 +337,6 @@ def compress_reports(run_name: str):
             aggregated_hits=multi.get_aggregated_hits(),
             aggregated_suggestions=multi.get_aggregated_number_of_suggestions(),
             potential_hits=potential_hits,
-            start_set_hits=start_set_hits,
             per_sim_n_hits=per_sim_n_hits,
             per_sim_metrics_total=per_sim_metrics_total,
             per_sim_metrics_suggestions=per_sim_metrics_suggestions,

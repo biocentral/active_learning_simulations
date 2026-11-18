@@ -106,11 +106,6 @@ class DashboardExperimentData(BaseModel):
     potential_hits: list[str] = Field(
         ..., description="Ids of the landscape members that count as hits"
     )
-    start_set_hits: list[str] = Field(
-        ...,
-        description="Potential hits in every replicate's starting set, which no campaign "
-        "of the experiment can find",
-    )
     per_sim_n_hits: list[list[int]] = Field(
         ..., description="Number of hits per iteration (one list per replicate)"
     )
