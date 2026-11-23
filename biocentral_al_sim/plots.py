@@ -656,6 +656,84 @@ def build_grouped_metric_bars(
     return alt.concat(*subplots, columns=columns)
 
 
+def build_replicate_rounds_chart(
+    rounds: pd.DataFrame,
+    y_title: str,
+    mean_line: bool,
+    target: float | None = None,
+    log_y: bool = False,
+) -> alt.LayerChart | alt.FacetChart:
+    """Value per round of each replicate colored by seed. Panel column gives row of subplots per panel.
+
+    Args:
+        rounds: Columns seed, round, value and optionally panel.
+        y_title: Title of the y axis.
+        mean_line: Points per replicate and a line for their mean, instead of a line per
+            replicate.
+        target: Draw a dashed target line at this value; not with panels.
+        log_y: Draw the y axis on a log scale.
+    """
+    seeds = list(dict.fromkeys(rounds["seed"]))
+    n_rounds = int(rounds["round"].max()) if not rounds.empty else 1
+    # keep replicates with equal values visible
+    nudge = {seed: (k - (len(seeds) - 1) / 2) * 0.08 for k, seed in enumerate(seeds)}
+    data = rounds.assign(
+        x=rounds["round"] + rounds["seed"].map(nudge), seed=rounds["seed"].astype(str)
+    )
+    y_scale = alt.Scale(type="log") if log_y else alt.Undefined
+    color = alt.Color("seed:N", title="Seed", sort=[str(seed) for seed in seeds])
+    tooltip = [
+        alt.Tooltip("seed:N", title="Seed"),
+        alt.Tooltip("round:Q", title="Round"),
+        alt.Tooltip("value:Q", title=y_title, format=".3g"),
+    ]
+    if mean_line:
+        layers = [
+            alt.Chart()
+            .mark_point(filled=True, size=50)
+            .encode(
+                x=round_axis(n_rounds, field="x"),
+                y=alt.Y("value:Q", title=y_title, scale=y_scale),
+                color=color,
+                tooltip=tooltip,
+            ),
+            alt.Chart()
+            .mark_line(color="black")
+            .encode(
+                x=round_axis(n_rounds),
+                y=alt.Y("mean(value):Q", title=y_title, scale=y_scale),
+            ),
+        ]
+    else:
+        layers = [
+            alt.Chart()
+            .mark_line(point=True)
+            .encode(
+                x=round_axis(n_rounds),
+                y=alt.Y("value:Q", title=y_title, scale=y_scale),
+                color=color,
+                tooltip=tooltip,
+            )
+        ]
+    if "panel" in rounds.columns:
+        return (
+            alt.layer(*layers, data=data)
+            .properties(width=600, height=220)
+            .facet(
+                row=alt.Row(
+                    "panel:N", title=None, sort=list(dict.fromkeys(rounds["panel"]))
+                )
+            )
+        )
+    if target is not None:
+        layers.append(
+            alt.Chart(pd.DataFrame({"target": [target]}))
+            .mark_rule(color="red", strokeDash=[6, 4], strokeWidth=2)
+            .encode(y="target:Q")
+        )
+    return alt.layer(*layers, data=data).properties(height=320)
+
+
 def build_rounds_by_model_chart(
     rounds: pd.DataFrame,
     baseline: pd.DataFrame,

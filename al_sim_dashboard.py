@@ -221,31 +221,30 @@ def _filter_experiments(
     ]
 
 
-def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
-    st.subheader("Overall performance summary")
+def _build_seed_rounds_frame(
+    seeds: list[int], per_sim: list[list[float]]
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"seed": seed, "round": i + 1, "value": value}
+            for seed, values in zip(seeds, per_sim)
+            for i, value in enumerate(values)
+        ],
+        columns=["seed", "round", "value"],
+    )
 
+
+def _render_simulations_aggregate(
+    exp: DashboardExperimentData, error_metric: str
+) -> None:
     summary = exp.summary
     threshold = summary["n_hits_threshold"]
-    cols = st.columns(3 if threshold is None else 4)
-    cols[0].metric("Total number of hits", exp.aggregated_hits)
-    cols[1].metric("Total number of suggestions", exp.aggregated_suggestions)
-
-    total_sims = len(exp.per_sim_is_success)
-    avg_hits = exp.aggregated_hits / total_sims if total_sims > 0 else 0
-    cols[2].metric("Avg. hits per campaign", f"{avg_hits:.2f}")
-
-    is_discrete = summary["is_discrete"]
-    metric_name = "Accuracy" if is_discrete else "MAE"
-
-    hits_per_sim = [sum(s) for s in exp.per_sim_n_hits]
-    best_idx = np.argmax(hits_per_sim)
-    worst_idx = np.argmin(hits_per_sim)
 
     # Success needs a hit threshold to be measured against
     if threshold is not None:
+        total_sims = len(exp.per_sim_is_success)
         success_count = sum(1 for s in exp.per_sim_is_success if s)
-        success_rate = success_count / total_sims if total_sims > 0 else 0
-        cols[3].metric("Success rate", f"{success_rate:.1%}")
+        st.metric("Success rate", f"{success_count / total_sims:.1%}")
 
         convergence_iterations, _, _ = al_plots._compute_convergence_stats(
             per_sim_n_hits=exp.per_sim_n_hits,
@@ -257,38 +256,44 @@ def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
             convergence_iterations=convergence_iterations,
             max_iterations=max((len(m) for m in exp.per_sim_metrics_total), default=0),
         )
-        st.altair_chart(perf_summary_chart.interactive(), width="stretch")
+        st.altair_chart(perf_summary_chart, width="stretch")
 
-    st.subheader("Target discovery progress")
-    cum_success_chart = al_plots.build_mean_cumulative_successes_chart(
-        per_sim_n_hits=exp.per_sim_n_hits,
-        per_sim_is_success=exp.per_sim_is_success,
-        target_threshold=threshold,
+    seeds = [single_sim.seed for single_sim in exp.single_sims]
+    st.subheader("Cumulative Hits")
+    st.altair_chart(
+        al_plots.build_replicate_rounds_chart(
+            _build_seed_rounds_frame(
+                seeds, [np.cumsum(n_hits).tolist() for n_hits in exp.per_sim_n_hits]
+            ),
+            "Cumulative hits",
+            mean_line=False,
+            target=threshold,
+        ),
+        width="stretch",
     )
-    st.altair_chart(cum_success_chart.interactive(), width="stretch")
 
-    st.subheader("Model performance evolution")
-    metric_evo_chart = al_plots.build_mean_metric_evolution_chart(
-        per_sim_metrics_total=exp.per_sim_metrics_total,
-        best_run_metrics=exp.per_sim_metrics_total[best_idx],
-        worst_run_metrics=exp.per_sim_metrics_total[worst_idx],
-        metric_name=metric_name,
+    metric_name = "Accuracy" if summary["is_discrete"] else error_metric
+    panels = {"Chosen sequences": "suggestions", "Unseen variants": "scored"}
+    errors = pd.concat(
+        [
+            _build_seed_rounds_frame(
+                seeds, _get_round_errors(exp, subset, error_metric)
+            ).assign(panel=panel)
+            for panel, subset in panels.items()
+        ],
+        ignore_index=True,
     )
-    st.altair_chart(metric_evo_chart.interactive(), width="stretch")
-
-    # Added: chart with suggestions metric overlay if available
-    if exp.per_sim_metrics_suggestions:
-        st.subheader("Model performance evolution (Suggestions) — mean per simulation")
-        # Build a custom overlay chart?
-        # Actually al_plots.build_mean_metric_evolution_chart doesn't seem to support suggestions
-        # But we can at least show the mean suggestions metric
-        suggestions_chart = al_plots.build_mean_metric_evolution_chart(
-            per_sim_metrics_total=exp.per_sim_metrics_suggestions,
-            best_run_metrics=exp.per_sim_metrics_suggestions[best_idx],
-            worst_run_metrics=exp.per_sim_metrics_suggestions[worst_idx],
-            metric_name=f"{metric_name} (Suggestions)",
+    st.subheader(f"{metric_name} Evolution")
+    st.altair_chart(
+        al_plots.build_replicate_rounds_chart(
+            errors, metric_name, mean_line=True, log_y=metric_name != "Accuracy"
         )
-        st.altair_chart(suggestions_chart.interactive(), width="stretch")
+    )
+    st.caption(
+        "Points: the replicates, line: their mean"
+        + ("; y-axis logarithmic" if metric_name != "Accuracy" else "")
+        + ". Unseen variants as on the Campaigns tab."
+    )
 
     unique_hits, _ = _extract_unique_hits([exp])
     dataset_sequences = _load_pool(exp.dataset_id.name)
@@ -920,9 +925,9 @@ def main():
 
         _render_header(exp)
 
-        sub_tabs = st.tabs(["Aggregate", "Per-Simulation Drill-down"])
-        with sub_tabs[0]:  # Simulations Aggregate
-            _render_simulations_aggregate(exp)
+        sub_tabs = st.tabs(["All replicates", "Per-Simulation Drill-down"])
+        with sub_tabs[0]:
+            _render_simulations_aggregate(exp, error_metric)
         with sub_tabs[1]:  # Per-simulation drill-down
             sim_labels = {s.label: s for s in exp.single_sims}
             selected_label = st.selectbox("Simulation run", sorted(sim_labels.keys()))
