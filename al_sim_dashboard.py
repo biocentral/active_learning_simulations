@@ -13,7 +13,7 @@ from pathlib import Path
 
 import altair as alt
 import numpy as np
-import pandas as pd
+import polars as pl
 import streamlit as st
 from biocentral_api import CommonEmbedder, ProjectionResult
 from biocentral_vis import BiocentralChart
@@ -244,14 +244,14 @@ def _filter_experiments(
 
 def _build_seed_rounds_frame(
     seeds: list[int], per_sim: list[list[float]]
-) -> pd.DataFrame:
-    return pd.DataFrame(
+) -> pl.DataFrame:
+    return pl.DataFrame(
         [
             {"seed": seed, "round": i + 1, "value": value}
             for seed, values in zip(seeds, per_sim)
             for i, value in enumerate(values)
         ],
-        columns=["seed", "round", "value"],
+        schema={"seed": pl.Int64, "round": pl.Int64, "value": pl.Float64},
     )
 
 
@@ -297,14 +297,13 @@ def _render_simulations_aggregate(
 
     metric_name = "Accuracy" if summary["is_discrete"] else error_metric
     panels = {"Chosen sequences": "suggestions", "Unseen variants": "scored"}
-    errors = pd.concat(
+    errors = pl.concat(
         [
             _build_seed_rounds_frame(
                 seeds, _get_round_errors(exp, subset, error_metric)
-            ).assign(panel=panel)
+            ).with_columns(panel=pl.lit(panel))
             for panel, subset in panels.items()
-        ],
-        ignore_index=True,
+        ]
     )
     st.subheader(f"{metric_name} Evolution")
     _draw(
@@ -523,8 +522,8 @@ def _collect_replicate_metrics(
 
 def _build_replicate_frame(
     exps: list[DashboardExperimentData], error_metric: str
-) -> pd.DataFrame:
-    return pd.DataFrame(
+) -> pl.DataFrame:
+    return pl.DataFrame(
         [
             {
                 "metric": metric,
@@ -537,8 +536,22 @@ def _build_replicate_frame(
             for v in values
             if v is not None
         ],
-        columns=["metric", "encoder", "model", "value"],
+        schema=_REPLICATE_SCHEMA,
     )
+
+
+_REPLICATE_SCHEMA = {
+    "metric": pl.String,
+    "encoder": pl.String,
+    "model": pl.String,
+    "value": pl.Float64,
+}
+_ROUNDS_SCHEMA = {
+    "model": pl.String,
+    "encoder": pl.String,
+    "round": pl.Int64,
+    "value": pl.Float64,
+}
 
 
 def _pad_rounds(
@@ -566,9 +579,9 @@ def _build_rounds_frame(
     subset: list[DashboardExperimentData],
     per_sim: Callable[[DashboardExperimentData], Sequence[Sequence[float]] | None],
     cumulative: bool,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Each campaign's mean per round, leaving out campaigns without the series."""
-    return pd.DataFrame(
+    return pl.DataFrame(
         [
             {
                 "model": exp.model,
@@ -580,19 +593,19 @@ def _build_rounds_frame(
             if (runs := per_sim(exp)) is not None
             for i, v in enumerate(_average_per_round(runs, cumulative))
         ],
-        columns=["model", "encoder", "round", "value"],
+        schema=_ROUNDS_SCHEMA,
     )
 
 
-def _build_calibration_frame(exps: list[DashboardExperimentData]) -> pd.DataFrame:
+def _build_calibration_frame(exps: list[DashboardExperimentData]) -> pl.DataFrame:
     """Observed coverage per calibration level, averaged over replicates of each campaign."""
-    return pd.DataFrame(
+    return pl.DataFrame(
         [
             {
                 "model": exp.model,
                 "encoder": _get_encoder_label(exp.embedder),
                 "expected": level,
-                "observed": observed,
+                "observed": float(observed),
             }
             for exp in exps
             if exp.per_sim_calibration is not None
@@ -600,7 +613,12 @@ def _build_calibration_frame(exps: list[DashboardExperimentData]) -> pd.DataFram
                 UNCERTAINTY_CALIBRATION_LEVELS, np.mean(exp.per_sim_calibration, axis=0)
             )
         ],
-        columns=["model", "encoder", "expected", "observed"],
+        schema={
+            "model": pl.String,
+            "encoder": pl.String,
+            "expected": pl.Float64,
+            "observed": pl.Float64,
+        },
     )
 
 
@@ -737,13 +755,14 @@ def _render_campaigns_tab(
         "Unseen variants": lambda exp: _get_round_errors(exp, "scored", error_metric),
     }
 
-    def build_panel_frame(exps: list[DashboardExperimentData]) -> pd.DataFrame:
-        return pd.concat(
+    def build_panel_frame(exps: list[DashboardExperimentData]) -> pl.DataFrame:
+        return pl.concat(
             [
-                _build_rounds_frame(exps, per_sim, cumulative=False).assign(panel=panel)
+                _build_rounds_frame(exps, per_sim, cumulative=False).with_columns(
+                    panel=pl.lit(panel)
+                )
                 for panel, per_sim in panels.items()
-            ],
-            ignore_index=True,
+            ]
         )
 
     st.subheader(f"{metric_name} Evolution")
@@ -765,7 +784,7 @@ def _render_campaigns_tab(
     )
 
     calibration = _build_calibration_frame(surrogates)
-    if not calibration.empty:
+    if not calibration.is_empty():
         st.subheader("Uncertainty Calibration")
         _draw(al_plots.build_calibration_chart(calibration, ENCODER_ORDER))
         st.caption(
@@ -806,7 +825,7 @@ def _pair_campaigns(
 def _build_paired_frame(
     pairs: list[Pair],
     values: Callable[[DashboardExperimentData], Mapping[str, Sequence[float | None]]],
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Change from the reference to the compared campaign per metric and replicate."""
     rows = []
     for reference, compared in pairs:
@@ -823,14 +842,14 @@ def _build_paired_frame(
                             "value": new - old,
                         }
                     )
-    return pd.DataFrame(rows, columns=["metric", "encoder", "model", "value"])
+    return pl.DataFrame(rows, schema=_REPLICATE_SCHEMA)
 
 
 def _build_paired_rounds_frame(
     pairs: list[Pair],
     per_sim: Callable[[DashboardExperimentData], Sequence[Sequence[float]] | None],
     cumulative: bool,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Mean change per round from the reference to the compared campaign, over replicates
     paired by seed. Leave out pairs where either campaign doesn't have the series."""
     rows = []
@@ -841,10 +860,13 @@ def _build_paired_rounds_frame(
         n_pairs = min(len(before), len(after))
         before, after = before[:n_pairs], after[:n_pairs]
         n_rounds = max(map(len, [*before, *after]), default=0)
-        change = pd.DataFrame(
-            _pad_rounds(after, cumulative, n_rounds)
-            - _pad_rounds(before, cumulative, n_rounds)
+        change = _pad_rounds(after, cumulative, n_rounds) - _pad_rounds(
+            before, cumulative, n_rounds
         )
+        if not change.size:
+            continue
+        # Rounds where a replicate stopped early are NaN; null leaves them out of the mean
+        means = pl.from_numpy(change).fill_nan(None).mean().row(0)
         rows += [
             {
                 "model": compared.model,
@@ -852,10 +874,10 @@ def _build_paired_rounds_frame(
                 "round": i + 1,
                 "value": value,
             }
-            for i, value in enumerate(change.mean())
-            if pd.notna(value)
+            for i, value in enumerate(means)
+            if value is not None
         ]
-    return pd.DataFrame(rows, columns=["model", "encoder", "round", "value"])
+    return pl.DataFrame(rows, schema=_ROUNDS_SCHEMA)
 
 
 def _compute_miscalibration(exp: DashboardExperimentData) -> dict[str, list[float]]:
@@ -1011,15 +1033,14 @@ def _render_ablations_tab(
         "Unseen variants": lambda exp: _get_round_errors(exp, "scored", error_metric),
     }
 
-    def build_panel_frame(pairs: list[Pair]) -> pd.DataFrame:
-        return pd.concat(
+    def build_panel_frame(pairs: list[Pair]) -> pl.DataFrame:
+        return pl.concat(
             [
-                _build_paired_rounds_frame(pairs, per_sim, cumulative=False).assign(
-                    panel=panel
-                )
+                _build_paired_rounds_frame(
+                    pairs, per_sim, cumulative=False
+                ).with_columns(panel=pl.lit(panel))
                 for panel, per_sim in panels.items()
-            ],
-            ignore_index=True,
+            ]
         )
 
     st.subheader(f"{metric_name} Evolution")
@@ -1039,7 +1060,7 @@ def _render_ablations_tab(
     )
 
     calibration = _build_paired_frame(surrogates, _compute_miscalibration)
-    if not calibration.empty:
+    if not calibration.is_empty():
         st.subheader("Uncertainty Calibration")
         _draw(
             al_plots.build_grouped_metric_bars(

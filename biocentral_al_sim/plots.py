@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 import altair as alt
 import numpy as np
 import pandas as pd
+import polars as pl
 
 
 def _extract_consecutive_failures_threshold(
@@ -123,7 +125,7 @@ def build_metric_evolution_chart(
 def build_n_hits_chart(n_iteration_hits: list[int]) -> alt.Chart:
     """Cumulative hits per round."""
     n_rounds = len(n_iteration_hits or [])
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "round": range(1, n_rounds + 1),
             "cumulative": np.cumsum(n_iteration_hits or []).astype(int),
@@ -150,7 +152,7 @@ def build_consecutive_failures_chart(
 ) -> alt.LayerChart:
     """Rounds in a row without a hit, at the end of each round."""
     failures = iteration_consecutive_failures or []
-    df = pd.DataFrame({"round": range(1, len(failures) + 1), "failures": failures})
+    df = pl.DataFrame({"round": range(1, len(failures) + 1), "failures": failures})
 
     step = (
         alt.Chart(df)
@@ -168,7 +170,7 @@ def build_consecutive_failures_chart(
 
     threshold = _extract_consecutive_failures_threshold(stop_reasons)
     if threshold is not None:
-        rule_df = pd.DataFrame(
+        rule_df = pl.DataFrame(
             {"y": [threshold], "label": [f"Threshold ({threshold})"]}
         )
         rule = (
@@ -540,8 +542,8 @@ _CAP_WIDTH = 10  # about half the bar width
 
 
 def build_grouped_metric_bars(
-    replicates: pd.DataFrame,
-    baselines: pd.DataFrame,
+    replicates: pl.DataFrame,
+    baselines: pl.DataFrame,
     titles: dict[str, str],
     encoder_order: list[str],
     columns: int = 2,
@@ -557,13 +559,16 @@ def build_grouped_metric_bars(
         columns: Subplots per row.
     """
     summary = (
-        replicates.groupby(["metric", "encoder", "model"])["value"]
-        .agg(mean="mean", se="sem")
-        .fillna({"se": 0.0})
-        .reset_index()
+        replicates.group_by(["metric", "encoder", "model"], maintain_order=True)
+        .agg(
+            mean=pl.col("value").mean(),
+            # A single replicate has no standard error
+            se=(pl.col("value").std() / pl.len().sqrt()).fill_null(0.0),
+        )
+        .with_columns(
+            low=pl.col("mean") - pl.col("se"), high=pl.col("mean") + pl.col("se")
+        )
     )
-    summary["low"] = summary["mean"] - summary["se"]
-    summary["high"] = summary["mean"] + summary["se"]
     x = alt.X(
         "encoder:N",
         title="Encoder",
@@ -574,7 +579,7 @@ def build_grouped_metric_bars(
     offset = alt.XOffset("model:N")
     subplots = []
     for metric, title in titles.items():
-        means = alt.Chart(summary[summary["metric"] == metric]).encode(
+        means = alt.Chart(summary.filter(pl.col("metric") == metric)).encode(
             x=x, xOffset=offset
         )
         layers = [
@@ -598,7 +603,7 @@ def build_grouped_metric_bars(
             means.mark_tick(color="black", size=_CAP_WIDTH, thickness=1.5).encode(
                 y="high:Q"
             ),
-            alt.Chart(replicates[replicates["metric"] == metric])
+            alt.Chart(replicates.filter(pl.col("metric") == metric))
             .mark_circle(color="black", size=20, opacity=0.6)
             .encode(
                 x=x,
@@ -610,11 +615,11 @@ def build_grouped_metric_bars(
                 ],
             ),
         ]
-        baseline = baselines[baselines["metric"] == metric]
-        if not baseline.empty:
+        baseline = baselines.filter(pl.col("metric") == metric)
+        if not baseline.is_empty():
             layers.append(
                 alt.Chart(
-                    pd.DataFrame(
+                    pl.DataFrame(
                         {
                             "value": [baseline["value"].mean()],
                             "series": ["Random model"],
@@ -637,7 +642,7 @@ def build_grouped_metric_bars(
 
 
 def build_replicate_rounds_chart(
-    rounds: pd.DataFrame,
+    rounds: pl.DataFrame,
     y_title: str,
     mean_line: bool,
     target: float | None = None,
@@ -654,11 +659,13 @@ def build_replicate_rounds_chart(
         log_y: Draw the y axis on a log scale.
     """
     seeds = list(dict.fromkeys(rounds["seed"]))
-    n_rounds = int(rounds["round"].max()) if not rounds.empty else 1
+    n_rounds = max(rounds["round"], default=1)
     # keep replicates with equal values visible
     nudge = {seed: (k - (len(seeds) - 1) / 2) * 0.08 for k, seed in enumerate(seeds)}
-    data = rounds.assign(
-        x=rounds["round"] + rounds["seed"].map(nudge), seed=rounds["seed"].astype(str)
+    data = rounds.with_columns(
+        x=pl.col("round")
+        + pl.col("seed").replace_strict(nudge, return_dtype=pl.Float64),
+        seed=pl.col("seed").cast(pl.String),
     )
     y_scale = alt.Scale(type="log") if log_y else alt.Undefined
     color = alt.Color("seed:N", title="Seed", sort=[str(seed) for seed in seeds])
@@ -707,7 +714,7 @@ def build_replicate_rounds_chart(
         )
     if target is not None:
         layers.append(
-            alt.Chart(pd.DataFrame({"target": [target]}))
+            alt.Chart(pl.DataFrame({"target": [target]}))
             .mark_rule(color="red", strokeDash=[6, 4], strokeWidth=2)
             .encode(y="target:Q")
         )
@@ -715,8 +722,8 @@ def build_replicate_rounds_chart(
 
 
 def build_rounds_by_model_chart(
-    rounds: pd.DataFrame,
-    baseline: pd.DataFrame,
+    rounds: pl.DataFrame,
+    baseline: pl.DataFrame,
     y_title: str,
     encoder_order: list[str],
     log_y: bool = False,
@@ -734,7 +741,7 @@ def build_rounds_by_model_chart(
         zero_line: Mark zero with a black line, for changes.
     """
     panels = ["panel"] if "panel" in rounds.columns else []
-    n_rounds = int(rounds["round"].max()) if not rounds.empty else 1
+    n_rounds = max(rounds["round"], default=1)
     y_scale = alt.Scale(type="log") if log_y else alt.Undefined
     base = alt.Chart().encode(
         x=round_axis(n_rounds), y=alt.Y("value:Q", title=y_title, scale=y_scale)
@@ -751,17 +758,19 @@ def build_rounds_by_model_chart(
             ],
         )
     ]
-    data = rounds.assign(series="encoder")
-    if not baseline.empty:
-        mean = baseline.groupby([*panels, "round"], as_index=False)["value"].mean()
+    data = rounds.with_columns(series=pl.lit("encoder"))
+    if not baseline.is_empty():
+        mean = baseline.group_by([*panels, "round"], maintain_order=True).agg(
+            pl.col("value").mean()
+        )
         # Repeated per surrogate model, so the baseline shows in every subplot
-        data = pd.concat(
+        data = pl.concat(
             [data]
             + [
-                mean.assign(model=model, series="Random model")
-                for model in rounds["model"].unique()
+                mean.with_columns(model=pl.lit(model), series=pl.lit("Random model"))
+                for model in rounds["model"].unique(maintain_order=True)
             ],
-            ignore_index=True,
+            how="diagonal",
         )
         layers.append(
             base.transform_filter(alt.datum.series == "Random model")
@@ -787,7 +796,7 @@ def build_rounds_by_model_chart(
 
 
 def build_calibration_chart(
-    curves: pd.DataFrame, encoder_order: list[str]
+    curves: pl.DataFrame, encoder_order: list[str]
 ) -> alt.FacetChart:
     """Observed against expected interval coverage, a subplot per surrogate model with a line
     per encoder and the diagonal for theoretical perfect calibration.
@@ -796,14 +805,16 @@ def build_calibration_chart(
         curves: Columns model, encoder, expected, observed.
         encoder_order: Encoders in legend order.
     """
-    diagonal = pd.DataFrame({"expected": [0.0, 1.0], "observed": [0.0, 1.0]})
-    data = pd.concat(
-        [curves.assign(series="encoder")]
+    diagonal = pl.DataFrame({"expected": [0.0, 1.0], "observed": [0.0, 1.0]})
+    data = pl.concat(
+        [curves.with_columns(series=pl.lit("encoder"))]
         + [
-            diagonal.assign(model=model, series="Perfect calibration")
-            for model in curves["model"].unique()
+            diagonal.with_columns(
+                model=pl.lit(model), series=pl.lit("Perfect calibration")
+            )
+            for model in curves["model"].unique(maintain_order=True)
         ],
-        ignore_index=True,
+        how="diagonal",
     )
     scale, axis = alt.Scale(domain=[0, 1]), alt.Axis(format="%")
     base = alt.Chart().encode(
@@ -867,7 +878,7 @@ def build_label_distribution_chart(
         # Bin it here so we don't give every label to Vega
         values = np.array([float(label) for label in labels])
         counts, edges = np.histogram(values, bins=_round_bin_edges(values))
-        df = pd.DataFrame({"start": edges[:-1], "end": edges[1:], "count": counts})
+        df = pl.DataFrame({"start": edges[:-1], "end": edges[1:], "count": counts})
         bars = (
             alt.Chart(df)
             .mark_bar(color="steelblue")
@@ -889,10 +900,8 @@ def build_label_distribution_chart(
         except ValueError:
             order = sorted(label_names)
         names = [label_names[label] for label in order]
-        counts = pd.Series(labels).value_counts()
-        df = pd.DataFrame(
-            {"name": names, "count": [int(counts.get(label, 0)) for label in order]}
-        )
+        counts = Counter(labels)
+        df = pl.DataFrame({"name": names, "count": [counts[label] for label in order]})
         bars = (
             alt.Chart(df)
             .mark_bar(color="steelblue")
@@ -921,7 +930,7 @@ def build_label_distribution_chart(
     if threshold is None:
         return bars.properties(height=320)
     rule = (
-        alt.Chart(pd.DataFrame(rule_data))
+        alt.Chart(pl.DataFrame(rule_data))
         .mark_rule(color="#d62728", strokeDash=[6, 4], strokeWidth=2)
         .encode(x=rule_x)
     )
@@ -930,15 +939,13 @@ def build_label_distribution_chart(
 
 def build_mutation_depth_chart(depths: dict[str, list[int]]) -> alt.Chart:
     """Histogram of mutational depth for entire pool and hits."""
-    rows = []
-    for group, values in depths.items():
-        counts = pd.Series(values).value_counts()
-        rows.extend(
-            {"group": group, "depth": int(depth), "count": int(count)}
-            for depth, count in counts.items()
-        )
-    df = pd.DataFrame(rows)
-    df["share"] = df["count"] / df.groupby("group")["count"].transform("sum")
+    df = pl.DataFrame(
+        [
+            {"group": group, "depth": depth, "count": count}
+            for group, values in depths.items()
+            for depth, count in Counter(values).items()
+        ]
+    ).with_columns(share=pl.col("count") / pl.col("count").sum().over("group"))
     return (
         alt.Chart(df)
         .mark_bar()

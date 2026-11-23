@@ -1,8 +1,9 @@
+import logging
 import re
 from statistics import NormalDist
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from biocentral_api import ActiveLearningOptimizationMode
 from biotrainer_core.input_files import read_FASTA
 
@@ -20,6 +21,8 @@ from .results import (
     ActiveLearningMultipleSimulationResult,
     ActiveLearningSingleSimulationResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def campaign_setup(ssr: ActiveLearningSingleSimulationResult) -> DashboardCampaignSetup:
@@ -163,7 +166,7 @@ def _spearman(x: np.ndarray, y: np.ndarray) -> float | None:
     """Spearman correlation over average ranks, None when either side is constant."""
     if np.ptp(x) == 0 or np.ptp(y) == 0:
         return None
-    return float(np.corrcoef(pd.Series(x).rank(), pd.Series(y).rank())[0, 1])
+    return float(np.corrcoef(pl.Series(x).rank(), pl.Series(y).rank())[0, 1])
 
 
 def _ndcg(prediction: np.ndarray, label: np.ndarray, k: int) -> float | None:
@@ -256,7 +259,7 @@ def parse_dataset_from_filename(fname: str) -> str:
 
 def compress_reports(run_name: str):
     if not RESULTS_DIR.exists():
-        print(f"Directory {RESULTS_DIR} not found.")
+        logger.error("Directory %s not found", RESULTS_DIR)
         return
 
     json_files = sorted(RESULTS_DIR.glob("*.json"))
@@ -268,7 +271,7 @@ def compress_reports(run_name: str):
         if "compressed_dashboard" in path.name:
             continue
 
-        print(f"Processing {path.name}...")
+        logger.info("Processing %s", path.name)
 
         multi = ActiveLearningMultipleSimulationResult.from_json(path)
         dataset_name = multi.dataset_id()
@@ -372,8 +375,9 @@ def compress_reports(run_name: str):
     with open(OUTPUT_FILE, "w") as f:
         f.write(compressed.model_dump_json(indent=4))
 
-    print(f"Successfully created {OUTPUT_FILE} with {len(experiments)} experiments.")
+    logger.info("Wrote %s with %d experiments", OUTPUT_FILE, len(experiments))
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     compress_reports(RUN_VERSION)
