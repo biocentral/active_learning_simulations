@@ -1,5 +1,4 @@
-"""Plot the label distribution of every engineering landscape.
-"""
+"""Plot the label distribution of every engineering landscape."""
 
 from __future__ import annotations
 
@@ -11,10 +10,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import seaborn as sns
+from bioengineer_active_learning_simulations.datasets import ALSimulatorDataset
 from biotrainer_core.input_files import read_FASTA
 from matplotlib.ticker import FuncFormatter
-
-from bioengineer_active_learning_simulations.datasets import ALSimulatorDataset
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +214,9 @@ def build_figure(scores: pl.DataFrame, summary: pl.DataFrame) -> plt.Figure:
 def main() -> None:
     scores = load_labels()
     summary = summarize(scores)
-    logger.info("%s variants across %s landscapes", f"{scores.height:,}", summary.height)
+    logger.info(
+        "%s variants across %s landscapes", f"{scores.height:,}", summary.height
+    )
     with pl.Config(tbl_rows=20, tbl_width_chars=200, float_precision=4):
         logger.info("%s", summary)
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)

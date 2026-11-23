@@ -1,12 +1,11 @@
-from typing import List
 from pathlib import Path
 
 from biotrainer_core.data_classes import SequenceData
-from biotrainer_core.input_files import read_FASTA, pgym_csv_to_fasta, write_FASTA
+from biotrainer_core.input_files import pgym_csv_to_fasta, read_FASTA, write_FASTA
 
 
-def remove_outliers(seq_data: List[SequenceData]):
-    """ Remove outliers from the dataset based on the mean and standard deviation. (Currently not used) """
+def remove_outliers(seq_data: list[SequenceData]):
+    """Remove outliers from the dataset based on the mean and standard deviation. (Currently not used)"""
     id2label = {data_point.seq_id: float(data_point.label) for data_point in seq_data}
 
     # Calculate mean and standard deviation
@@ -24,36 +23,49 @@ def remove_outliers(seq_data: List[SequenceData]):
 
 
 def main():
-    raw_paths = [# Screening: pools of diverse sequences
-                 Path("screening/raw/amylase_pet.fasta"),
-                 Path("screening/raw/biotrainer_meltome_mixed.fasta"),
-                 Path("screening/raw/scl.fasta"),
-                 Path("screening/raw/PHOT_CHLRE_Chen_2023.csv"),
-                 Path("screening/raw/exotox_merged.fasta"),
-                 # Engineering: mutational landscapes
-                 Path("engineering/raw/combingym_GB1.fasta"),
-                 Path("engineering/raw/combingym_CreiLOV.fasta"),
-                 Path("engineering/raw/combingym_CR9114.fasta"),
-                 Path("engineering/raw/combingym_mTagBFP2.fasta"),
-                 Path("engineering/raw/combingym_SaCas9.fasta"),
-                 Path("engineering/raw/flip2_TrpB.fasta"),
-                 Path("engineering/raw/flip2_NucB.fasta"),
-                 ]
+    raw_paths = [  # Screening: pools of diverse sequences
+        Path("screening/raw/amylase_pet.fasta"),
+        Path("screening/raw/biotrainer_meltome_mixed.fasta"),
+        Path("screening/raw/scl.fasta"),
+        Path("screening/raw/PHOT_CHLRE_Chen_2023.csv"),
+        Path("screening/raw/exotox_merged.fasta"),
+        # Engineering: mutational landscapes
+        Path("engineering/raw/combingym_GB1.fasta"),
+        Path("engineering/raw/combingym_CreiLOV.fasta"),
+        Path("engineering/raw/combingym_CR9114.fasta"),
+        Path("engineering/raw/combingym_mTagBFP2.fasta"),
+        Path("engineering/raw/combingym_SaCas9.fasta"),
+        Path("engineering/raw/flip2_TrpB.fasta"),
+        Path("engineering/raw/flip2_NucB.fasta"),
+    ]
     seq_length_limit = 2000
     for raw_path in raw_paths:
         # raw/<source>/<file> -> the dataset family dir next to it, e.g. screening/raw/x.fasta -> screening/x.fasta
-        output_path = raw_path.parent.parent / f"{raw_path.name.split('.')[0]}_max{seq_length_limit}.fasta"
+        output_path = (
+            raw_path.parent.parent
+            / f"{raw_path.name.split('.')[0]}_max{seq_length_limit}.fasta"
+        )
         if raw_path.suffix == ".csv":
-            n_seqs_in_pgym = pgym_csv_to_fasta(raw_path, output_path, single_mutations_only=True)
-            assert n_seqs_in_pgym > 0, "No sequences found in the CSV file and written to FASTA file."
+            n_seqs_in_pgym = pgym_csv_to_fasta(
+                raw_path, output_path, single_mutations_only=True
+            )
+            assert n_seqs_in_pgym > 0, (
+                "No sequences found in the CSV file and written to FASTA file."
+            )
             seq_data = read_FASTA(output_path)
         else:
             seq_data = read_FASTA(raw_path)
 
         n_original_data = len(seq_data)
-        seq_data_filtered = [data_point for data_point in seq_data if len(data_point.seq) < seq_length_limit]
+        seq_data_filtered = [
+            data_point
+            for data_point in seq_data
+            if len(data_point.seq) < seq_length_limit
+        ]
         n_written = write_FASTA(output_path, seq_data_filtered)
-        print(f"Wrote {n_written} sequences to {output_path} (out of {n_original_data} original sequences)")
+        print(
+            f"Wrote {n_written} sequences to {output_path} (out of {n_original_data} original sequences)"
+        )
 
 
 if __name__ == "__main__":

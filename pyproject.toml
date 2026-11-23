@@ -28,3 +28,6 @@ dev = [
 
 [tool.uv.sources]
 biocentral-api = { path = "../biocentral/biocentral_api/python", editable = true }
+
+[tool.ruff.lint]
+extend-select = ["I"]

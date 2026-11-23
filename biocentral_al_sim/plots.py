@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Tuple
 
 import altair as alt
 import numpy as np
 import pandas as pd
 
 
-def _extract_consecutive_failures_threshold(stop_reasons: Optional[List[str]]) -> Optional[int]:
+def _extract_consecutive_failures_threshold(
+    stop_reasons: list[str] | None,
+) -> int | None:
     if not stop_reasons:
         return None
     for reason in stop_reasons:
@@ -19,7 +20,7 @@ def _extract_consecutive_failures_threshold(stop_reasons: Optional[List[str]]) -
     return None
 
 
-def _align_iteration_lengths(*lists: Optional[List]) -> Tuple[int, List[List]]:
+def _align_iteration_lengths(*lists: list | None) -> tuple[int, list[list]]:
     lengths = [len(lst or []) for lst in lists]
     n = max(lengths) if lengths else 0
     aligned = [(lst or [])[:n] for lst in lists]
@@ -27,10 +28,10 @@ def _align_iteration_lengths(*lists: Optional[List]) -> Tuple[int, List[List]]:
 
 
 def _compute_convergence_stats(
-    per_sim_n_hits: List[List[int]],
+    per_sim_n_hits: list[list[int]],
     n_hits_threshold: int,
-) -> Tuple[List[int], Optional[float], Optional[float]]:
-    convergence_iterations: List[int] = []
+) -> tuple[list[int], float | None, float | None]:
+    convergence_iterations: list[int] = []
     for successes in per_sim_n_hits:
         if not successes:
             continue
@@ -48,9 +49,9 @@ def _compute_convergence_stats(
 
 
 def build_metric_evolution_chart(
-    iteration_metrics_total: List[float],
-    iteration_metrics_suggestions: List[float],
-    n_iteration_hits: List[int],
+    iteration_metrics_total: list[float],
+    iteration_metrics_suggestions: list[float],
+    n_iteration_hits: list[int],
     metric_name: str,
 ) -> alt.LayerChart:
     n, (total, suggestions, successes) = _align_iteration_lengths(
@@ -60,11 +61,15 @@ def build_metric_evolution_chart(
     )
     iterations = list(range(1, n + 1))
 
-    rows: List[Dict] = []
+    rows: list[dict] = []
     for i, v in enumerate(total):
-        rows.append({"iteration": iterations[i], "series": "All Data", "value": float(v)})
+        rows.append(
+            {"iteration": iterations[i], "series": "All Data", "value": float(v)}
+        )
     for i, v in enumerate(suggestions):
-        rows.append({"iteration": iterations[i], "series": "Suggestions", "value": float(v)})
+        rows.append(
+            {"iteration": iterations[i], "series": "Suggestions", "value": float(v)}
+        )
     df = pd.DataFrame(rows)
 
     line = (
@@ -82,18 +87,28 @@ def build_metric_evolution_chart(
     success_values = [
         total[i] for i, s in enumerate(successes) if s > 0 and i < len(total)
     ]
-    layers: List[alt.Chart] = [line]
+    layers: list[alt.Chart] = [line]
     if success_iters and success_values:
         stars_df = pd.DataFrame(
             {"iteration": success_iters[: len(success_values)], "value": success_values}
         )
         stars = (
             alt.Chart(stars_df)
-            .mark_point(shape="diamond", size=220, color="gold", filled=True, stroke="black", strokeWidth=1.2)
+            .mark_point(
+                shape="diamond",
+                size=220,
+                color="gold",
+                filled=True,
+                stroke="black",
+                strokeWidth=1.2,
+            )
             .encode(
                 x="iteration:Q",
                 y="value:Q",
-                tooltip=[alt.Tooltip("iteration:Q", title="Iteration"), alt.Tooltip("value:Q", title="Metric", format=".4f")],
+                tooltip=[
+                    alt.Tooltip("iteration:Q", title="Iteration"),
+                    alt.Tooltip("value:Q", title="Metric", format=".4f"),
+                ],
             )
         )
         layers.append(stars)
@@ -103,7 +118,7 @@ def build_metric_evolution_chart(
     )
 
 
-def build_n_hits_chart(n_iteration_hits: List[int]) -> alt.LayerChart:
+def build_n_hits_chart(n_iteration_hits: list[int]) -> alt.LayerChart:
     successes = n_iteration_hits or []
     n_iterations = len(successes)
     iterations = list(range(1, n_iterations + 1))
@@ -148,11 +163,11 @@ def build_n_hits_chart(n_iteration_hits: List[int]) -> alt.LayerChart:
 
 
 def build_consecutive_failures_chart(
-    iteration_consecutive_failures: List[int],
-    stop_reasons: Optional[List[str]],
+    iteration_consecutive_failures: list[int],
+    stop_reasons: list[str] | None,
 ) -> alt.LayerChart:
     failures = iteration_consecutive_failures or []
-    iterations = list(range(0, len(failures) + 1))
+    iterations = list(range(len(failures) + 1))
     values = [0] + list(failures)
     df = pd.DataFrame({"iteration": iterations, "failures": values})
 
@@ -165,11 +180,13 @@ def build_consecutive_failures_chart(
             tooltip=["iteration:Q", "failures:Q"],
         )
     )
-    layers: List[alt.Chart] = [step]
+    layers: list[alt.Chart] = [step]
 
     threshold = _extract_consecutive_failures_threshold(stop_reasons)
     if threshold is not None:
-        rule_df = pd.DataFrame({"y": [threshold], "label": [f"Threshold ({threshold})"]})
+        rule_df = pd.DataFrame(
+            {"y": [threshold], "label": [f"Threshold ({threshold})"]}
+        )
         rule = (
             alt.Chart(rule_df)
             .mark_rule(color="#990000", strokeDash=[6, 4])
@@ -183,12 +200,12 @@ def build_consecutive_failures_chart(
 
 
 def build_suggested_labels_chart(
-    iteration_suggestions: List[List[str]],
-    id2label: Dict[str, str],
-    unique_labels: List[str],
-    optimization_targets: Optional[List[str]],
+    iteration_suggestions: list[list[str]],
+    id2label: dict[str, str],
+    unique_labels: list[str],
+    optimization_targets: list[str] | None,
 ) -> alt.Chart:
-    rows: List[Dict] = []
+    rows: list[dict] = []
     targets = set(optimization_targets or [])
     for iter_idx, sugg_ids in enumerate(iteration_suggestions, start=1):
         iter_labels = [id2label.get(sid, "<unknown>") for sid in sugg_ids]
@@ -207,8 +224,10 @@ def build_suggested_labels_chart(
 
     df = pd.DataFrame(rows)
     if df.empty:
-        return alt.Chart(pd.DataFrame({"iteration": [], "count": []})).mark_bar().properties(
-            title="Distribution of Suggested Labels", height=320
+        return (
+            alt.Chart(pd.DataFrame({"iteration": [], "count": []}))
+            .mark_bar()
+            .properties(title="Distribution of Suggested Labels", height=320)
         )
 
     chart = (
@@ -232,7 +251,7 @@ def build_suggested_labels_chart(
 def build_performance_summary_chart(
     success_count: int,
     total_runs: int,
-    convergence_iterations: List[int],
+    convergence_iterations: list[int],
     max_iterations: int,
 ) -> alt.Chart:
     success_rate = (success_count / total_runs * 100.0) if total_runs > 0 else 0.0
@@ -250,10 +269,30 @@ def build_performance_summary_chart(
         conv_annotation = "n/a"
 
     rows = [
-        {"row": f"Success Rate ({success_count}/{total_runs} runs)", "segment": "Success/Fast", "value": success_rate, "annotation": f"{success_rate:.1f}%"},
-        {"row": f"Success Rate ({success_count}/{total_runs} runs)", "segment": "Failure/Slow", "value": failure_rate, "annotation": f"{failure_rate:.1f}%"},
-        {"row": conv_label, "segment": "Success/Fast", "value": score, "annotation": conv_annotation},
-        {"row": conv_label, "segment": "Failure/Slow", "value": 100.0 - score, "annotation": ""},
+        {
+            "row": f"Success Rate ({success_count}/{total_runs} runs)",
+            "segment": "Success/Fast",
+            "value": success_rate,
+            "annotation": f"{success_rate:.1f}%",
+        },
+        {
+            "row": f"Success Rate ({success_count}/{total_runs} runs)",
+            "segment": "Failure/Slow",
+            "value": failure_rate,
+            "annotation": f"{failure_rate:.1f}%",
+        },
+        {
+            "row": conv_label,
+            "segment": "Success/Fast",
+            "value": score,
+            "annotation": conv_annotation,
+        },
+        {
+            "row": conv_label,
+            "segment": "Failure/Slow",
+            "value": 100.0 - score,
+            "annotation": "",
+        },
     ]
     df = pd.DataFrame(rows)
 
@@ -266,7 +305,12 @@ def build_performance_summary_chart(
         alt.Chart(df)
         .mark_bar(stroke="black", strokeWidth=0.5)
         .encode(
-            x=alt.X("value:Q", stack="zero", title="Percentage / Score", scale=alt.Scale(domain=[0, 100])),
+            x=alt.X(
+                "value:Q",
+                stack="zero",
+                title="Percentage / Score",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
             y=alt.Y("row:N", title=None, sort=None),
             color=alt.Color("segment:N", scale=color_scale, title="Segment"),
             tooltip=[
@@ -296,14 +340,14 @@ def build_performance_summary_chart(
 
 
 def build_mean_cumulative_successes_chart(
-    per_sim_n_hits: List[List[int]],
-    per_sim_is_success: List[bool],
+    per_sim_n_hits: list[list[int]],
+    per_sim_is_success: list[bool],
     target_threshold: int,
 ) -> alt.LayerChart:
     if not per_sim_n_hits:
-        return alt.layer(alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()).properties(
-            title="Target Discovery Progress", height=320
-        )
+        return alt.layer(
+            alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()
+        ).properties(title="Target Discovery Progress", height=320)
 
     max_iter = max(len(s) for s in per_sim_n_hits)
     iterations = np.arange(1, max_iter + 1)
@@ -324,7 +368,9 @@ def build_mean_cumulative_successes_chart(
                     "iteration": int(iterations[it_idx]),
                     "value": float(value),
                     "sim": sim_idx,
-                    "is_success": bool(per_sim_is_success[sim_idx]) if sim_idx < len(per_sim_is_success) else False,
+                    "is_success": bool(per_sim_is_success[sim_idx])
+                    if sim_idx < len(per_sim_is_success)
+                    else False,
                 }
             )
     indiv_df = pd.DataFrame(indiv_rows)
@@ -382,7 +428,9 @@ def build_mean_cumulative_successes_chart(
             ],
         )
     )
-    rule_df = pd.DataFrame({"y": [target_threshold], "label": [f"Target ({target_threshold})"]})
+    rule_df = pd.DataFrame(
+        {"y": [target_threshold], "label": [f"Target ({target_threshold})"]}
+    )
     target_rule = (
         alt.Chart(rule_df)
         .mark_rule(color="red", strokeDash=[6, 4], strokeWidth=2)
@@ -395,15 +443,15 @@ def build_mean_cumulative_successes_chart(
 
 
 def build_mean_metric_evolution_chart(
-    per_sim_metrics_total: List[List[float]],
-    best_run_metrics: List[float],
-    worst_run_metrics: List[float],
+    per_sim_metrics_total: list[list[float]],
+    best_run_metrics: list[float],
+    worst_run_metrics: list[float],
     metric_name: str,
 ) -> alt.LayerChart:
     if not per_sim_metrics_total:
-        return alt.layer(alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()).properties(
-            title=f"Model Performance Evolution ({metric_name})", height=320
-        )
+        return alt.layer(
+            alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()
+        ).properties(title=f"Model Performance Evolution ({metric_name})", height=320)
 
     max_iter = max(len(m) for m in per_sim_metrics_total)
     iterations = np.arange(1, max_iter + 1)
@@ -444,11 +492,15 @@ def build_mean_metric_evolution_chart(
         )
     )
 
-    overlay_rows: List[Dict] = []
+    overlay_rows: list[dict] = []
     for it_idx, value in enumerate(best_run_metrics or [], start=1):
-        overlay_rows.append({"iteration": it_idx, "value": float(value), "run": "Best Run"})
+        overlay_rows.append(
+            {"iteration": it_idx, "value": float(value), "run": "Best Run"}
+        )
     for it_idx, value in enumerate(worst_run_metrics or [], start=1):
-        overlay_rows.append({"iteration": it_idx, "value": float(value), "run": "Worst Run"})
+        overlay_rows.append(
+            {"iteration": it_idx, "value": float(value), "run": "Worst Run"}
+        )
     overlay_df = pd.DataFrame(overlay_rows)
 
     overlay = (
@@ -459,7 +511,9 @@ def build_mean_metric_evolution_chart(
             y=alt.Y("value:Q", title=metric_name),
             color=alt.Color(
                 "run:N",
-                scale=alt.Scale(domain=["Best Run", "Worst Run"], range=["#2ecc71", "#e74c3c"]),
+                scale=alt.Scale(
+                    domain=["Best Run", "Worst Run"], range=["#2ecc71", "#e74c3c"]
+                ),
                 title="Run",
             ),
             tooltip=[
@@ -476,11 +530,11 @@ def build_mean_metric_evolution_chart(
 
 
 def build_cross_experiment_cumulative_chart(
-    experiments: Dict[str, List[List[int]]],
-    targets: Dict[str, int],
+    experiments: dict[str, list[list[int]]],
+    targets: dict[str, int],
 ) -> alt.LayerChart:
-    rows: List[Dict] = []
-    rule_rows: List[Dict] = []
+    rows: list[dict] = []
+    rule_rows: list[dict] = []
     for name, per_sim in experiments.items():
         if not per_sim:
             continue
@@ -506,7 +560,9 @@ def build_cross_experiment_cumulative_chart(
 
     df = pd.DataFrame(rows)
     if df.empty:
-        return alt.layer(alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()).properties(
+        return alt.layer(
+            alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()
+        ).properties(
             title="Cross-Experiment: Cumulative Target Successes (mean)", height=360
         )
 
@@ -537,7 +593,7 @@ def build_cross_experiment_cumulative_chart(
         )
     )
 
-    layers: List[alt.Chart] = [band, line]
+    layers: list[alt.Chart] = [band, line]
     if rule_rows:
         rule_df = pd.DataFrame(rule_rows)
         rules = (
@@ -560,10 +616,10 @@ def build_cross_experiment_cumulative_chart(
 
 
 def build_cross_experiment_metric_chart(
-    experiments: Dict[str, List[List[float]]],
+    experiments: dict[str, list[list[float]]],
     metric_name: str,
 ) -> alt.LayerChart:
-    rows: List[Dict] = []
+    rows: list[dict] = []
     for name, per_sim in experiments.items():
         if not per_sim:
             continue
@@ -579,16 +635,20 @@ def build_cross_experiment_metric_chart(
                     "experiment": name,
                     "iteration": it_idx + 1,
                     "mean": float(mean[it_idx]) if not np.isnan(mean[it_idx]) else None,
-                    "low": float(mean[it_idx] - std[it_idx]) if not np.isnan(mean[it_idx]) else None,
-                    "high": float(mean[it_idx] + std[it_idx]) if not np.isnan(mean[it_idx]) else None,
+                    "low": float(mean[it_idx] - std[it_idx])
+                    if not np.isnan(mean[it_idx])
+                    else None,
+                    "high": float(mean[it_idx] + std[it_idx])
+                    if not np.isnan(mean[it_idx])
+                    else None,
                 }
             )
 
     df = pd.DataFrame(rows).dropna()
     if df.empty:
-        return alt.layer(alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()).properties(
-            title=f"Cross-Experiment: {metric_name} (mean)", height=360
-        )
+        return alt.layer(
+            alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line()
+        ).properties(title=f"Cross-Experiment: {metric_name} (mean)", height=360)
 
     band = (
         alt.Chart(df)

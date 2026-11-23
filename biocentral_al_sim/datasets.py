@@ -1,23 +1,34 @@
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
 from biocentral_api import ActiveLearningOptimizationMode
+from pydantic import BaseModel, Field
 
 
 class ALSimulatorDatasetDefinition(BaseModel):
     """Everything that defines a simulation dataset: its data and its optimization target"""
+
     fasta_path: str = Field(description="Path to the labelled simulation FASTA")
-    optimization_mode: ActiveLearningOptimizationMode = Field(description="How the labels are optimized")
-    discrete_targets: Optional[List[str]] = Field(default=None, description="Target labels (mode: DISCRETE)")
-    target_lb: Optional[float] = Field(default=None, description="Lower bound of the target (mode: INTERVAL)")
-    target_ub: Optional[float] = Field(default=None, description="Upper bound of the target (mode: INTERVAL)")
-    target_value: Optional[float] = Field(default=None, description="Target value (mode: VALUE)")
-    reference_fasta_path: Optional[str] = Field(
+    optimization_mode: ActiveLearningOptimizationMode = Field(
+        description="How the labels are optimized"
+    )
+    discrete_targets: list[str] | None = Field(
+        default=None, description="Target labels (mode: DISCRETE)"
+    )
+    target_lb: float | None = Field(
+        default=None, description="Lower bound of the target (mode: INTERVAL)"
+    )
+    target_ub: float | None = Field(
+        default=None, description="Upper bound of the target (mode: INTERVAL)"
+    )
+    target_value: float | None = Field(
+        default=None, description="Target value (mode: VALUE)"
+    )
+    reference_fasta_path: str | None = Field(
         default=None,
         description="Single-sequence FASTA with the wild type this dataset mutates. Only mutational "
-                    "landscapes have one; mutation-aware splits (see splits) require it.")
+        "landscapes have one; mutation-aware splits (see splits) require it.",
+    )
 
 
 class ALSimulatorDataset(Enum):
@@ -39,24 +50,28 @@ class ALSimulatorDataset(Enum):
     @staticmethod
     def screening():
         """The datasets in the experiment grid: the screening pools."""
-        return [ALSimulatorDataset.MELTOME_MAXIMIZE,
-                ALSimulatorDataset.MELTOME_MINIMIZE,
-                ALSimulatorDataset.SCL,
-                ALSimulatorDataset.AMYLASE,
-                ALSimulatorDataset.PHOT,
-                ALSimulatorDataset.EXOTOX]
+        return [
+            ALSimulatorDataset.MELTOME_MAXIMIZE,
+            ALSimulatorDataset.MELTOME_MINIMIZE,
+            ALSimulatorDataset.SCL,
+            ALSimulatorDataset.AMYLASE,
+            ALSimulatorDataset.PHOT,
+            ALSimulatorDataset.EXOTOX,
+        ]
 
     @staticmethod
     def engineering():
         """Single-parent mutational landscapes. These declare a wild type, so they are the datasets
         the mutation-aware extrapolation splits in the splits module can be applied to."""
-        return [ALSimulatorDataset.COMBINGYM_GB1,
-                ALSimulatorDataset.COMBINGYM_CREILOV,
-                ALSimulatorDataset.COMBINGYM_CR9114,
-                ALSimulatorDataset.COMBINGYM_MTAGBFP2,
-                ALSimulatorDataset.COMBINGYM_SACAS9,
-                ALSimulatorDataset.FLIP2_TRPB,
-                ALSimulatorDataset.FLIP2_NUCB]
+        return [
+            ALSimulatorDataset.COMBINGYM_GB1,
+            ALSimulatorDataset.COMBINGYM_CREILOV,
+            ALSimulatorDataset.COMBINGYM_CR9114,
+            ALSimulatorDataset.COMBINGYM_MTAGBFP2,
+            ALSimulatorDataset.COMBINGYM_SACAS9,
+            ALSimulatorDataset.FLIP2_TRPB,
+            ALSimulatorDataset.FLIP2_NUCB,
+        ]
 
     def definition(self) -> ALSimulatorDatasetDefinition:
         definition = _DATASET_DEFINITIONS.get(self.name)
@@ -64,15 +79,17 @@ class ALSimulatorDataset(Enum):
             raise ValueError(f"No dataset definition for {self.name}.")
         return definition
 
-    def reference_sequence(self) -> Optional[str]:
+    def reference_sequence(self) -> str | None:
         """Wild-type sequence of this dataset, or None if it is not a mutational landscape."""
         reference_path = self.definition().reference_fasta_path
         if reference_path is None:
             return None
         lines = Path(reference_path).read_text().splitlines()
-        return "".join(line.strip() for line in lines if line and not line.startswith(">"))
+        return "".join(
+            line.strip() for line in lines if line and not line.startswith(">")
+        )
 
-    def to_path(self, path_override: Optional[Dict[str, str]] = None) -> str:
+    def to_path(self, path_override: dict[str, str] | None = None) -> str:
         path = None
         if path_override:
             path = path_override.get(self.name)
@@ -81,27 +98,33 @@ class ALSimulatorDataset(Enum):
         return self.definition().fasta_path
 
 
-_DATASET_DEFINITIONS: Dict[str, ALSimulatorDatasetDefinition] = {
+_DATASET_DEFINITIONS: dict[str, ALSimulatorDatasetDefinition] = {
     ALSimulatorDataset.MELTOME_MAXIMIZE.name: ALSimulatorDatasetDefinition(
         fasta_path="datasets/screening/biotrainer_meltome_mixed_max2000.fasta",
-        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE),
+        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+    ),
     ALSimulatorDataset.MELTOME_MINIMIZE.name: ALSimulatorDatasetDefinition(
         fasta_path="datasets/screening/biotrainer_meltome_mixed_max2000.fasta",
-        optimization_mode=ActiveLearningOptimizationMode.MINIMIZE),
+        optimization_mode=ActiveLearningOptimizationMode.MINIMIZE,
+    ),
     ALSimulatorDataset.SCL.name: ALSimulatorDatasetDefinition(
         fasta_path="datasets/screening/scl_max2000.fasta",
         optimization_mode=ActiveLearningOptimizationMode.DISCRETE,
-        discrete_targets=["Peroxisome"]),
+        discrete_targets=["Peroxisome"],
+    ),
     ALSimulatorDataset.AMYLASE.name: ALSimulatorDatasetDefinition(
         fasta_path="datasets/screening/amylase_pet_max2000.fasta",
-        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE),
+        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+    ),
     ALSimulatorDataset.PHOT.name: ALSimulatorDatasetDefinition(
         fasta_path="datasets/screening/PHOT_CHLRE_Chen_2023_max2000.fasta",
-        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE),
+        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+    ),
     ALSimulatorDataset.EXOTOX.name: ALSimulatorDatasetDefinition(
         fasta_path="datasets/screening/exotox_merged_max2000.fasta",
         optimization_mode=ActiveLearningOptimizationMode.DISCRETE,
-        discrete_targets=["EXOTOXIN"]),
+        discrete_targets=["EXOTOXIN"],
+    ),
 }
 
 _COMBINGYM_RAW = "datasets/engineering/raw/combingym"
@@ -117,30 +140,37 @@ def _combingym(name: str) -> ALSimulatorDatasetDefinition:
     return ALSimulatorDatasetDefinition(
         fasta_path=f"datasets/engineering/combingym_{name}_max2000.fasta",
         reference_fasta_path=f"{_COMBINGYM_RAW}/{name}/{name}_wt.fasta",
-        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE)
+        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+    )
 
 
-_DATASET_DEFINITIONS.update({
-    ALSimulatorDataset.COMBINGYM_GB1.name: _combingym("GB1"),
-    ALSimulatorDataset.COMBINGYM_CREILOV.name: _combingym("CreiLOV"),
-    ALSimulatorDataset.COMBINGYM_CR9114.name: _combingym("CR9114"),
-    ALSimulatorDataset.COMBINGYM_MTAGBFP2.name: _combingym("mTagBFP2"),
-    ALSimulatorDataset.COMBINGYM_SACAS9.name: _combingym("SaCas9"),
-})
+_DATASET_DEFINITIONS.update(
+    {
+        ALSimulatorDataset.COMBINGYM_GB1.name: _combingym("GB1"),
+        ALSimulatorDataset.COMBINGYM_CREILOV.name: _combingym("CreiLOV"),
+        ALSimulatorDataset.COMBINGYM_CR9114.name: _combingym("CR9114"),
+        ALSimulatorDataset.COMBINGYM_MTAGBFP2.name: _combingym("mTagBFP2"),
+        ALSimulatorDataset.COMBINGYM_SACAS9.name: _combingym("SaCas9"),
+    }
+)
 
 
 _FLIP2_RAW = "datasets/engineering/raw/flip2"
 
-_DATASET_DEFINITIONS.update({
-    # Continuous growth-based fitness. The parent is Tm9D8*, an engineered TmTrpB variant rather than
-    # wild-type TmTrpB, reconstructed by compile_flip2.py (see the FLIP2 README).
-    ALSimulatorDataset.FLIP2_TRPB.name: ALSimulatorDatasetDefinition(
-        fasta_path="datasets/engineering/flip2_TrpB_max2000.fasta",
-        reference_fasta_path=f"{_FLIP2_RAW}/trpb/TrpB_wt.fasta",
-        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE),
-    # Ordinal ladder: 0 non-functional, 1 activity > 0, 2 activity > WT, 3 activity > A73R
-    ALSimulatorDataset.FLIP2_NUCB.name: ALSimulatorDatasetDefinition(
-        fasta_path="datasets/engineering/flip2_NucB_max2000.fasta",
-        reference_fasta_path=f"{_FLIP2_RAW}/nucb/NucB_wt.fasta",
-        optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE),
-})
+_DATASET_DEFINITIONS.update(
+    {
+        # Continuous growth-based fitness. The parent is Tm9D8*, an engineered TmTrpB variant rather than
+        # wild-type TmTrpB, reconstructed by compile_flip2.py (see the FLIP2 README).
+        ALSimulatorDataset.FLIP2_TRPB.name: ALSimulatorDatasetDefinition(
+            fasta_path="datasets/engineering/flip2_TrpB_max2000.fasta",
+            reference_fasta_path=f"{_FLIP2_RAW}/trpb/TrpB_wt.fasta",
+            optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+        ),
+        # Ordinal ladder: 0 non-functional, 1 activity > 0, 2 activity > WT, 3 activity > A73R
+        ALSimulatorDataset.FLIP2_NUCB.name: ALSimulatorDatasetDefinition(
+            fasta_path="datasets/engineering/flip2_NucB_max2000.fasta",
+            reference_fasta_path=f"{_FLIP2_RAW}/nucb/NucB_wt.fasta",
+            optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+        ),
+    }
+)
