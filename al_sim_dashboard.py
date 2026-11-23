@@ -235,7 +235,9 @@ def _build_seed_rounds_frame(
 
 
 def _render_simulations_aggregate(
-    exp: DashboardExperimentData, error_metric: str
+    exp: DashboardExperimentData,
+    error_metric: str,
+    projection_result: ProjectionResult | None,
 ) -> None:
     summary = exp.summary
     threshold = summary["n_hits_threshold"]
@@ -295,22 +297,16 @@ def _render_simulations_aggregate(
         + ". Unseen variants as on the Campaigns tab."
     )
 
-    unique_hits, _ = _extract_unique_hits([exp])
-    dataset_sequences = _load_pool(exp.dataset_id.name)
-    projection_result = _load_projection(
-        dataset_id=exp.dataset_id, embedder_name=exp.embedder
-    )
     if projection_result is None:
-        st.warning("Projection not available for this experiment.")
         return
-    else:
-        chart_projection = BiocentralChart.projection_result(
-            projection_result=projection_result,
-            dataset=dataset_sequences,
-            highlight_ids=unique_hits,
-            highlight_name="Unique Hits",
-        )
-        st.altair_chart(chart_projection.chart.interactive(), width="stretch")
+    unique_hits, _ = _extract_unique_hits([exp])
+    chart_projection = BiocentralChart.projection_result(
+        projection_result=projection_result,
+        dataset=_load_pool(exp.dataset_id.name),
+        highlight_ids=unique_hits,
+        highlight_name="Unique Hits",
+    )
+    st.altair_chart(chart_projection.chart.interactive(), width="stretch")
 
 
 def _render_single_simulation(
@@ -908,13 +904,16 @@ def main():
 
         _render_header(exp)
 
+        # Engineering landscapes are too large to project
+        projection_result = (
+            _load_projection(dataset_id=exp.dataset_id, embedder_name=exp.embedder)
+            if exp.dataset_id in ALSimulatorDataset.screening()
+            else None
+        )
         sub_tabs = st.tabs(["All replicates", "Single replicate"])
         with sub_tabs[0]:
-            _render_simulations_aggregate(exp, error_metric)
+            _render_simulations_aggregate(exp, error_metric, projection_result)
         with sub_tabs[1]:
-            projection_result = _load_projection(
-                dataset_id=exp.dataset_id, embedder_name=exp.embedder
-            )
             for sim_data in sorted(exp.single_sims, key=lambda s: s.seed):
                 _render_single_simulation(exp, sim_data, projection_result)
 
