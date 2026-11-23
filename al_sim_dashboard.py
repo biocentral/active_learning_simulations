@@ -8,7 +8,6 @@ Compress the results, then run the dashboard:
 from __future__ import annotations
 
 import re
-from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -220,22 +219,6 @@ def _filter_experiments(
         for e in experiments
         if e.setup.use_delta_embeddings or _get_arm(e) not in with_delta
     ]
-
-
-def _index_by_label(
-    exps: list[DashboardExperimentData],
-) -> dict[str, DashboardExperimentData]:
-    """Experiments by model and embedder. Ambiguous labels fall back to the file name."""
-    exps = sorted(exps, key=lambda e: (e.model, e.embedder))
-    labels = [
-        f"{e.model} · {_get_encoder_label(e.embedder)}"
-        + (" · delta" if e.setup.use_delta_embeddings else "")
-        for e in exps
-    ]
-    counts = Counter(labels)
-    return {
-        label if counts[label] == 1 else e.name: e for e, label in zip(exps, labels)
-    }
 
 
 def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
@@ -914,8 +897,26 @@ def main():
         _render_campaigns_tab(subset, error_metric)
 
     with main_tabs[2]:
-        by_label = _index_by_label(subset)
-        exp = by_label[st.selectbox("Select Experiment", list(by_label))]
+        encoders = list(
+            dict.fromkeys(
+                [e for e in ENCODER_LABELS if any(x.embedder == e for x in subset)]
+                + sorted(x.embedder for x in subset)
+            )
+        )
+        col_encoder, col_model = st.columns(2)
+        encoder = col_encoder.selectbox(
+            "Encoder", encoders, format_func=_get_encoder_label
+        )
+        model = col_model.selectbox(
+            "Surrogate model",
+            sorted({x.model for x in subset if x.embedder == encoder}),
+        )
+        candidates = [x for x in subset if x.embedder == encoder and x.model == model]
+        # Several experiments only differ in what the filters leave open, e.g. the split
+        if len(candidates) > 1:
+            chosen = st.selectbox("Results file", [x.name for x in candidates])
+            candidates = [x for x in candidates if x.name == chosen]
+        exp = candidates[0]
 
         _render_header(exp)
 
