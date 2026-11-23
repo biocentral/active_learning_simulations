@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -32,6 +33,20 @@ from biocentral_al_sim.settings import THROUGHPUTS
 from biocentral_al_sim.splits import substitutions
 
 st.set_page_config(page_title="AL Simulation Dashboard", layout="wide")
+
+
+def _draw(
+    chart: alt.Chart | alt.LayerChart | alt.FacetChart | alt.ConcatChart, **kwargs
+) -> None:
+    """Draw an Altair chart, with black axis, legend and facet text in the light theme."""
+    if st.context.theme.type == "light":
+        # These replace any axis, legend or header config; the charts drawn here set none
+        chart = (
+            chart.configure_axis(labelColor="black", titleColor="black")
+            .configure_legend(labelColor="black", titleColor="black")
+            .configure_header(labelColor="black", titleColor="black")
+        )
+    st.altair_chart(chart, **kwargs)
 
 
 ENCODER_LABELS = {
@@ -258,11 +273,11 @@ def _render_simulations_aggregate(
             convergence_iterations=convergence_iterations,
             max_iterations=max((len(m) for m in exp.per_sim_metrics_total), default=0),
         )
-        st.altair_chart(perf_summary_chart, width="stretch")
+        _draw(perf_summary_chart, width="stretch")
 
     seeds = [single_sim.seed for single_sim in exp.single_sims]
     st.subheader("Cumulative Hits")
-    st.altair_chart(
+    _draw(
         al_plots.build_replicate_rounds_chart(
             _build_seed_rounds_frame(
                 seeds, [np.cumsum(n_hits).tolist() for n_hits in exp.per_sim_n_hits]
@@ -286,7 +301,7 @@ def _render_simulations_aggregate(
         ignore_index=True,
     )
     st.subheader(f"{metric_name} Evolution")
-    st.altair_chart(
+    _draw(
         al_plots.build_replicate_rounds_chart(
             errors, metric_name, mean_line=True, log_y=metric_name != "Accuracy"
         )
@@ -306,7 +321,7 @@ def _render_simulations_aggregate(
         highlight_ids=unique_hits,
         highlight_name="Unique Hits",
     )
-    st.altair_chart(chart_projection.chart.interactive(), width="stretch")
+    _draw(chart_projection.chart.interactive(), width="stretch")
 
 
 def _render_single_simulation(
@@ -329,13 +344,13 @@ def _render_single_simulation(
     # Keyed per seed, as replicates can draw identical charts
     col_left, col_right = st.columns(2)
     with col_left:
-        st.altair_chart(
+        _draw(
             al_plots.build_n_hits_chart(n_iteration_hits=n_iteration_hits),
             width="stretch",
             key=f"hits_{seed}",
         )
     with col_right:
-        st.altair_chart(
+        _draw(
             al_plots.build_consecutive_failures_chart(
                 iteration_consecutive_failures=sim_data.iteration_consecutive_failures,
                 stop_reasons=stop_reasons,
@@ -407,7 +422,7 @@ def _render_single_simulation(
             st.session_state[view] += 1
             st.rerun()
 
-    st.altair_chart(
+    _draw(
         projections[st.session_state[view]].chart.interactive(),
         width="stretch",
         key=f"projection_{seed}",
@@ -620,7 +635,7 @@ def _render_campaigns_tab(
     )
 
     st.subheader("Hits")
-    st.altair_chart(
+    _draw(
         al_plots.build_grouped_metric_bars(
             replicates,
             baselines,
@@ -645,7 +660,7 @@ def _render_campaigns_tab(
     }
     if prediction_titles:
         st.subheader("Predictions on the Whole Landscape\\*")
-        st.altair_chart(
+        _draw(
             al_plots.build_grouped_metric_bars(
                 replicates, baselines, prediction_titles, ENCODER_ORDER, columns=2
             )
@@ -661,7 +676,7 @@ def _render_campaigns_tab(
         )
 
     st.subheader("Cumulative Hits")
-    st.altair_chart(
+    _draw(
         al_plots.build_rounds_by_model_chart(
             _build_rounds_frame(
                 surrogates, lambda exp: exp.per_sim_n_hits, cumulative=True
@@ -676,7 +691,7 @@ def _render_campaigns_tab(
 
     if subset[0].per_sim_suggested_label_means is not None:
         st.subheader("Mean Label of Chosen Sequences")
-        st.altair_chart(
+        _draw(
             al_plots.build_rounds_by_model_chart(
                 _build_rounds_frame(
                     surrogates,
@@ -710,7 +725,7 @@ def _render_campaigns_tab(
         )
 
     st.subheader(f"{metric_name} Evolution")
-    st.altair_chart(
+    _draw(
         al_plots.build_rounds_by_model_chart(
             build_panel_frame(surrogates),
             build_panel_frame(random),
@@ -730,7 +745,7 @@ def _render_campaigns_tab(
     calibration = _build_calibration_frame(surrogates)
     if not calibration.empty:
         st.subheader("Uncertainty Calibration")
-        st.altair_chart(al_plots.build_calibration_chart(calibration, ENCODER_ORDER))
+        _draw(al_plots.build_calibration_chart(calibration, ENCODER_ORDER))
         st.caption(
             "Share of the candidates each round's model scored whose label lies within the "
             "central interval of the predicted normal distribution, pooled over rounds and "
@@ -774,7 +789,7 @@ def _render_dataset_tab(selected_dataset: str, exps):
     )
 
     st.markdown("**Label Distribution**")
-    st.altair_chart(
+    _draw(
         al_plots.build_label_distribution_chart(
             labels, threshold, maximize, label_names
         ),
@@ -802,7 +817,7 @@ def _render_dataset_tab(selected_dataset: str, exps):
             "**Mutational Depth**",
             help="Substitutions of each variant from the dataset's parent sequence.",
         )
-        st.altair_chart(
+        _draw(
             al_plots.build_mutation_depth_chart(
                 {
                     "Full landscape": list(depths.values()),
