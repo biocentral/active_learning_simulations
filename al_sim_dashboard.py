@@ -314,114 +314,43 @@ def _render_simulations_aggregate(
 
 
 def _render_single_simulation(
-    exp: DashboardExperimentData, sim_data, summary: dict
+    exp: DashboardExperimentData,
+    sim_data,
+    projection_result: ProjectionResult | None,
 ) -> None:
+    """One replicate: why it stopped, its hits and failures per round, its raw stats and,
+    when there is one, its projection."""
+    seed = sim_data.seed
     stop_reasons = sim_data.stop_reasons
-
-    cols_row1 = st.columns(2)
-    cols_row1[0].metric("Seed", sim_data.seed)
+    st.subheader(f"Seed {seed}")
+    status = f"Stopped: {stop_reasons[0]}"
     if sim_data.n_hits_threshold is not None:
-        cols_row1[1].metric("Success", sim_data.is_success)
-    st.metric("Primary Stop Reason", stop_reasons[0])
-
-    metric_name = "Accuracy" if summary["is_discrete"] else "MAE"
+        status += " · successful" if sim_data.is_success else " · not successful"
+    st.caption(status)
 
     n_iteration_hits = list(map(len, sim_data.iteration_hits))
 
-    chart_metric = al_plots.build_metric_evolution_chart(
-        iteration_metrics_total=sim_data.iteration_metrics_total,
-        iteration_metrics_suggestions=sim_data.iteration_metrics_suggestions,
-        n_iteration_hits=n_iteration_hits,
-        metric_name=metric_name,
-    )
-
-    chart_failures = al_plots.build_consecutive_failures_chart(
-        iteration_consecutive_failures=sim_data.iteration_consecutive_failures,
-        stop_reasons=stop_reasons,
-    )
-
-    chart_successes = al_plots.build_n_hits_chart(n_iteration_hits=n_iteration_hits)
-
+    # Keyed per seed, as replicates can draw identical charts
     col_left, col_right = st.columns(2)
     with col_left:
-        st.altair_chart(chart_metric.interactive(), width="stretch")
-        st.altair_chart(chart_failures.interactive(), width="stretch")
-    with col_right:
-        st.altair_chart(chart_successes.interactive(), width="stretch")
-
-    # Projection Chart
-    projection_result = _load_projection(
-        dataset_id=exp.dataset_id, embedder_name=exp.embedder
-    )
-    if projection_result is None:
-        st.warning("Projection not available for this experiment.")
-        return
-    else:
-        # Projection Chart Navigation
-        dataset_sequences = _load_pool(exp.dataset_id.name)
-
-        # Create options: Full dataset + each iteration
-        projection_options = ["Full Dataset"] + [
-            f"Iteration {i + 1}" for i in range(len(sim_data.iteration_hits))
-        ]
-
-        # Initialize session state for projection selection if not exists
-        if "projection_view_idx" not in st.session_state:
-            st.session_state.projection_view_idx = 0
-
-        iteration_projections = []
-        all_iteration_hits = set()
-        for iteration_hits in sim_data.iteration_hits:
-            for hit in iteration_hits:
-                all_iteration_hits.add(hit)
-            chart_projection = BiocentralChart.projection_result(
-                projection_result=projection_result,
-                dataset=dataset_sequences,
-                highlight_ids=set(iteration_hits),
-                highlight_name="Iteration Hits",
-            )
-            iteration_projections.append(chart_projection)
-
-        chart_projection_full = BiocentralChart.projection_result(
-            projection_result=projection_result,
-            dataset=dataset_sequences,
-            highlight_ids=set(all_iteration_hits),
-            highlight_name="All Hits",
+        st.altair_chart(
+            al_plots.build_n_hits_chart(n_iteration_hits=n_iteration_hits),
+            width="stretch",
+            key=f"hits_{seed}",
         )
-        projections = [chart_projection_full] + iteration_projections
-
-        # Navigation controls
-        col1, col2, col3 = st.columns([1, 2, 1])
-
-        with col1:
-            if st.button(
-                "← Previous", disabled=st.session_state.projection_view_idx == 0
-            ):
-                st.session_state.projection_view_idx -= 1
-                st.rerun()
-
-        with col2:
-            project_view_idx = st.session_state.projection_view_idx
-            chart_title = projection_options[project_view_idx]
-            st.markdown(f"**{chart_title}**")
-
-        with col3:
-            if st.button(
-                "Next →",
-                disabled=st.session_state.projection_view_idx
-                == len(projection_options) - 1,
-            ):
-                st.session_state.projection_view_idx += 1
-                st.rerun()
-
-        project_view_idx = st.session_state.projection_view_idx
-        chart_projection = projections[project_view_idx]
-
-        st.altair_chart(chart_projection.chart.interactive(), width="stretch")
+    with col_right:
+        st.altair_chart(
+            al_plots.build_consecutive_failures_chart(
+                iteration_consecutive_failures=sim_data.iteration_consecutive_failures,
+                stop_reasons=stop_reasons,
+            ),
+            width="stretch",
+            key=f"failures_{seed}",
+        )
 
     with st.expander("Raw stats"):
         st.markdown(f"- **Stop reasons:** {stop_reasons}")
-        st.markdown(f"- **Total iterations:** {sim_data.iteration_results_count}")
+        st.markdown(f"- **Total rounds:** {sim_data.iteration_results_count}")
         st.markdown(
             f"- **iteration_metrics_total:** `{sim_data.iteration_metrics_total}`"
         )
@@ -433,6 +362,60 @@ def _render_single_simulation(
         )
         st.markdown(f"- **n_iteration_hits:** `{n_iteration_hits}`")
         st.markdown(f"- **iteration_hits:** `{sim_data.iteration_hits}`")
+
+    if projection_result is None:
+        return
+    dataset_sequences = _load_pool(exp.dataset_id.name)
+    projection_options = ["Full Dataset"] + [
+        f"Iteration {i + 1}" for i in range(len(sim_data.iteration_hits))
+    ]
+    view = f"projection_view_idx_{seed}"
+    if view not in st.session_state:
+        st.session_state[view] = 0
+
+    iteration_projections = []
+    all_iteration_hits = set()
+    for iteration_hits in sim_data.iteration_hits:
+        all_iteration_hits.update(iteration_hits)
+        iteration_projections.append(
+            BiocentralChart.projection_result(
+                projection_result=projection_result,
+                dataset=dataset_sequences,
+                highlight_ids=set(iteration_hits),
+                highlight_name="Iteration Hits",
+            )
+        )
+    chart_projection_full = BiocentralChart.projection_result(
+        projection_result=projection_result,
+        dataset=dataset_sequences,
+        highlight_ids=all_iteration_hits,
+        highlight_name="All Hits",
+    )
+    projections = [chart_projection_full] + iteration_projections
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col1:
+        if st.button(
+            "← Previous", disabled=st.session_state[view] == 0, key=f"previous_{seed}"
+        ):
+            st.session_state[view] -= 1
+            st.rerun()
+    with col2:
+        st.markdown(f"**{projection_options[st.session_state[view]]}**")
+    with col3:
+        if st.button(
+            "Next →",
+            disabled=st.session_state[view] == len(projection_options) - 1,
+            key=f"next_{seed}",
+        ):
+            st.session_state[view] += 1
+            st.rerun()
+
+    st.altair_chart(
+        projections[st.session_state[view]].chart.interactive(),
+        width="stretch",
+        key=f"projection_{seed}",
+    )
 
 
 def _extract_consecutive_failures_threshold(stop_reasons: list[str]) -> int | None:
@@ -925,14 +908,15 @@ def main():
 
         _render_header(exp)
 
-        sub_tabs = st.tabs(["All replicates", "Per-Simulation Drill-down"])
+        sub_tabs = st.tabs(["All replicates", "Single replicate"])
         with sub_tabs[0]:
             _render_simulations_aggregate(exp, error_metric)
-        with sub_tabs[1]:  # Per-simulation drill-down
-            sim_labels = {s.label: s for s in exp.single_sims}
-            selected_label = st.selectbox("Simulation run", sorted(sim_labels.keys()))
-            sim_data = sim_labels[selected_label]
-            _render_single_simulation(exp, sim_data, exp.summary)
+        with sub_tabs[1]:
+            projection_result = _load_projection(
+                dataset_id=exp.dataset_id, embedder_name=exp.embedder
+            )
+            for sim_data in sorted(exp.single_sims, key=lambda s: s.seed):
+                _render_single_simulation(exp, sim_data, projection_result)
 
 
 if __name__ == "__main__":
