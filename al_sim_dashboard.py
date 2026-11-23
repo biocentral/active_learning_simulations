@@ -8,7 +8,7 @@ Compress the results, then run the dashboard:
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import altair as alt
@@ -188,13 +188,16 @@ def _get_arm(exp: DashboardExperimentData) -> tuple:
     return exp.dataset_id, exp.embedder, exp.model
 
 
-def _filter_experiments(
+ABLATIONS: dict[str, Callable[[DashboardCampaignSetup], bool]] = {
+    "Delta embeddings": lambda setup: setup.use_delta_embeddings,
+    "Generated candidates": lambda setup: setup.generate_candidates,
+}
+
+
+def _filter_throughput(
     experiments: list[DashboardExperimentData],
 ) -> list[DashboardExperimentData]:
-    """Filter a dataset's experiments to one throughput, candidate source and embedding
-    variant."""
-    st.sidebar.subheader("Campaign Setup")
-
+    """Narrow a dataset's experiments to one throughput."""
     by_size = sorted(
         experiments,
         key=lambda e: (e.setup.n_start, e.setup.n_suggestions_per_iteration),
@@ -204,10 +207,13 @@ def _filter_experiments(
         list(dict.fromkeys(_describe_throughput(e.setup) for e in by_size)),
         help="Starting set + rounds × sequences chosen per round",
     )
-    experiments = [
-        e for e in experiments if _describe_throughput(e.setup) == throughput
-    ]
+    return [e for e in experiments if _describe_throughput(e.setup) == throughput]
 
+
+def _filter_experiments(
+    experiments: list[DashboardExperimentData],
+) -> list[DashboardExperimentData]:
+    """Filter experiments to one candidate source and embedding variant."""
     by_source = sorted(experiments, key=lambda e: e.setup.n_substitutions or 0)
     source = st.sidebar.radio(
         "Candidate generation",
@@ -535,17 +541,25 @@ def _build_replicate_frame(
     )
 
 
-def _average_per_round(
-    per_sim: Sequence[Sequence[float]], cumulative: bool
-) -> list[float]:
-    """Per-round mean over replicates. Stopped replicates' totals are kept in cumulative series."""
-    n_rounds = max(map(len, per_sim), default=0)
+def _pad_rounds(
+    per_sim: Sequence[Sequence[float]], cumulative: bool, n_rounds: int
+) -> np.ndarray:
+    """Replicates by rounds. A replicate that stopped early keeps its final total in
+    cumulative series and is NaN in the others."""
     padded = []
     for values in per_sim:
         values = np.cumsum(values).tolist() if cumulative else list(values)
         fill = values[-1] if cumulative and values else np.nan
         padded.append(values + [fill] * (n_rounds - len(values)))
-    return np.nanmean(np.array(padded, dtype=float), axis=0).tolist()
+    return np.array(padded, dtype=float)
+
+
+def _average_per_round(
+    per_sim: Sequence[Sequence[float]], cumulative: bool
+) -> list[float]:
+    """Per-round mean over replicates. Stopped replicates' totals are kept in cumulative series."""
+    n_rounds = max(map(len, per_sim), default=0)
+    return np.nanmean(_pad_rounds(per_sim, cumulative, n_rounds), axis=0).tolist()
 
 
 def _build_rounds_frame(
@@ -602,13 +616,11 @@ def _describe_ndcg_cutoffs(exps: list[DashboardExperimentData], percentage: int)
     return f"n = {ns[0]}" if ns[0] == ns[-1] else f"n = {ns[0]}–{ns[-1]}"
 
 
-def _render_campaigns_tab(
-    subset: list[DashboardExperimentData], error_metric: str
-) -> None:
-    random = [exp for exp in subset if exp.model == "RANDOM"]
-    surrogates = [exp for exp in subset if exp.model != "RANDOM"]
-    maximize = subset[0].summary["optimization_mode"] == "MAXIMIZE"
-    metric_name = "Accuracy" if subset[0].summary["is_discrete"] else error_metric
+def _get_metric_titles(
+    exps: list[DashboardExperimentData], error_metric: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Subplot titles of the hit metrics and of the final round's prediction metrics."""
+    maximize = exps[0].summary["optimization_mode"] == "MAXIMIZE"
     hit_titles = {
         "total_hits": "Total Hits",
         "hit_rate": "Hit Rate",
@@ -617,13 +629,23 @@ def _render_campaigns_tab(
         else "Minimum Label Achieved",
     }
     prediction_titles = {
-        "final_error": metric_name,
+        "final_error": error_metric,
         "final_spearman": "Spearman Correlation",
         "final_ndcg@10": "NDCG@10",
         "final_ndcg@96": "NDCG@96",
-        "final_ndcg@1%": f"NDCG@1% ({_describe_ndcg_cutoffs(subset, 1)})",
-        "final_ndcg@10%": f"NDCG@10% ({_describe_ndcg_cutoffs(subset, 10)})",
+        "final_ndcg@1%": f"NDCG@1% ({_describe_ndcg_cutoffs(exps, 1)})",
+        "final_ndcg@10%": f"NDCG@10% ({_describe_ndcg_cutoffs(exps, 10)})",
     }
+    return hit_titles, prediction_titles
+
+
+def _render_campaigns_tab(
+    subset: list[DashboardExperimentData], error_metric: str
+) -> None:
+    random = [exp for exp in subset if exp.model == "RANDOM"]
+    surrogates = [exp for exp in subset if exp.model != "RANDOM"]
+    metric_name = "Accuracy" if subset[0].summary["is_discrete"] else error_metric
+    hit_titles, prediction_titles = _get_metric_titles(subset, error_metric)
     replicates = _build_replicate_frame(surrogates, error_metric)
     baselines = _build_replicate_frame(random, error_metric)
     present = set(replicates["metric"])
@@ -754,6 +776,288 @@ def _render_campaigns_tab(
         )
 
 
+Pair = tuple[DashboardExperimentData, DashboardExperimentData]
+
+
+def _pair_campaigns(
+    experiments: list[DashboardExperimentData],
+    reference: dict[str, bool],
+    compared: dict[str, bool],
+) -> list[Pair]:
+    """(reference, compared) campaigns of each encoder and model that ran with both setups,
+    each setup given as its ablations."""
+
+    def index_by_config(setup: dict[str, bool]) -> dict[tuple, DashboardExperimentData]:
+        found: dict[tuple, list[DashboardExperimentData]] = {}
+        for exp in experiments:
+            if all(ABLATIONS[name](exp.setup) == on for name, on in setup.items()):
+                found.setdefault((exp.embedder, exp.model), []).append(exp)
+        # Several campaigns per encoder and model would leave the pairing ambiguous
+        return {config: exps[0] for config, exps in found.items() if len(exps) == 1}
+
+    references, compareds = index_by_config(reference), index_by_config(compared)
+    return [
+        (references[config], compareds[config])
+        for config in references
+        if config in compareds
+    ]
+
+
+def _build_paired_frame(
+    pairs: list[Pair],
+    values: Callable[[DashboardExperimentData], Mapping[str, Sequence[float | None]]],
+) -> pd.DataFrame:
+    """Change from the reference to the compared campaign per metric and replicate."""
+    rows = []
+    for reference, compared in pairs:
+        before, after = values(reference), values(compared)
+        for metric in before.keys() & after.keys():
+            # Replicate i runs on the same seed, and so starting set, in every setup
+            for old, new in zip(before[metric], after[metric]):
+                if old is not None and new is not None:
+                    rows.append(
+                        {
+                            "metric": metric,
+                            "encoder": _get_encoder_label(compared.embedder),
+                            "model": compared.model,
+                            "value": new - old,
+                        }
+                    )
+    return pd.DataFrame(rows, columns=["metric", "encoder", "model", "value"])
+
+
+def _build_paired_rounds_frame(
+    pairs: list[Pair],
+    per_sim: Callable[[DashboardExperimentData], Sequence[Sequence[float]] | None],
+    cumulative: bool,
+) -> pd.DataFrame:
+    """Mean change per round from the reference to the compared campaign, over replicates
+    paired by seed. Leave out pairs where either campaign doesn't have the series."""
+    rows = []
+    for reference, compared in pairs:
+        before, after = per_sim(reference), per_sim(compared)
+        if before is None or after is None:
+            continue
+        n_pairs = min(len(before), len(after))
+        before, after = before[:n_pairs], after[:n_pairs]
+        n_rounds = max(map(len, [*before, *after]), default=0)
+        change = pd.DataFrame(
+            _pad_rounds(after, cumulative, n_rounds)
+            - _pad_rounds(before, cumulative, n_rounds)
+        )
+        rows += [
+            {
+                "model": compared.model,
+                "encoder": _get_encoder_label(compared.embedder),
+                "round": i + 1,
+                "value": value,
+            }
+            for i, value in enumerate(change.mean())
+            if pd.notna(value)
+        ]
+    return pd.DataFrame(rows, columns=["model", "encoder", "round", "value"])
+
+
+def _compute_miscalibration(exp: DashboardExperimentData) -> dict[str, list[float]]:
+    """Each replicate's mean distance between observed and expected coverage."""
+    if exp.per_sim_calibration is None:
+        return {}
+    return {
+        "miscalibration": [
+            float(np.mean(np.abs(np.array(observed) - UNCERTAINTY_CALIBRATION_LEVELS)))
+            for observed in exp.per_sim_calibration
+        ]
+    }
+
+
+def _render_ablations_tab(
+    experiments: list[DashboardExperimentData], error_metric: str
+) -> None:
+    available = [
+        name
+        for name, is_on in ABLATIONS.items()
+        if any(is_on(exp.setup) for exp in experiments)
+    ]
+    setups = []
+    for column, side in zip(st.columns(2), ("Reference", "Compared setup")):
+        column.markdown(f"**{side}**")
+        setups.append(
+            {name: column.toggle(name, key=f"{side}: {name}") for name in available}
+        )
+    reference, compared = setups
+    st.caption(
+        "Throughput and error metric follow the sidebar; its candidate generation and "
+        "delta embeddings choices do not apply here."
+    )
+    if reference == compared:
+        st.info("Pick two setups that differ in at least one ablation.")
+        return
+    pairs = _pair_campaigns(experiments, reference, compared)
+    if not pairs:
+        st.info("No encoder and surrogate model ran with both setups.")
+        return
+
+    random = [pair for pair in pairs if pair[1].model == "RANDOM"]
+    surrogates = [pair for pair in pairs if pair[1].model != "RANDOM"]
+    exps = [exp for pair in pairs for exp in pair]
+    maximize = exps[0].summary["optimization_mode"] == "MAXIMIZE"
+    metric_name = "Accuracy" if exps[0].summary["is_discrete"] else error_metric
+    hit_titles, prediction_titles = _get_metric_titles(exps, error_metric)
+    lower_is_better = {"final_error", "miscalibration"} | (
+        set() if maximize else {"best_label"}
+    )
+
+    def format_change_titles(
+        titles: dict[str, str], present: set[str]
+    ) -> dict[str, str]:
+        return {
+            metric: f"Δ {title}, {'↓' if metric in lower_is_better else '↑'} better"
+            for metric, title in titles.items()
+            if metric in present
+        }
+
+    def collect_metrics(
+        exp: DashboardExperimentData,
+    ) -> dict[str, Sequence[float | None]]:
+        return _collect_replicate_metrics(exp, error_metric)
+
+    changes = _build_paired_frame(surrogates, collect_metrics)
+    baselines = _build_paired_frame(random, collect_metrics)
+    present = set(changes["metric"])
+    other_candidates = any(
+        _describe_candidate_source(old.setup) != _describe_candidate_source(new.setup)
+        for old, new in pairs
+    )
+    candidates_note = (
+        " The two setups score different candidates, pool variants or generated mutants, "
+        "so these changes also reflect the candidates, not only the model."
+        if other_candidates
+        else ""
+    )
+    random_note = " Dashed line: the random model's change." if random else ""
+    bars_note = (
+        "Bars: mean change from the reference to the compared setup over replicates "
+        "paired by seed, which share their starting set; dots: each pair's change; "
+        "whiskers: standard error. Only encoders and models that ran with both setups "
+        "appear."
+    )
+
+    st.subheader("Hits")
+    _draw(
+        al_plots.build_grouped_metric_bars(
+            changes,
+            baselines,
+            format_change_titles(hit_titles, present),
+            ENCODER_ORDER,
+            columns=3,
+        )
+    )
+    st.caption(bars_note + random_note)
+
+    prediction_titles = format_change_titles(prediction_titles, present)
+    if prediction_titles:
+        st.subheader("Predictions on the Whole Landscape\\*")
+        _draw(
+            al_plots.build_grouped_metric_bars(
+                changes, baselines, prediction_titles, ENCODER_ORDER, columns=2
+            )
+        )
+        st.caption(
+            "\\* As on Campaigns, for now on the variants the final round's model scored."
+            + candidates_note
+            + " Bars, dots and whiskers as above."
+            + random_note
+        )
+
+    st.subheader("Cumulative Hits")
+    _draw(
+        al_plots.build_rounds_by_model_chart(
+            _build_paired_rounds_frame(
+                surrogates, lambda exp: exp.per_sim_n_hits, cumulative=True
+            ),
+            _build_paired_rounds_frame(
+                random, lambda exp: exp.per_sim_n_hits, cumulative=True
+            ),
+            "Δ cumulative hits (mean)",
+            ENCODER_ORDER,
+            zero_line=True,
+        )
+    )
+
+    if exps[0].per_sim_suggested_label_means is not None:
+        st.subheader("Mean Label of Chosen Sequences")
+        _draw(
+            al_plots.build_rounds_by_model_chart(
+                _build_paired_rounds_frame(
+                    surrogates,
+                    lambda exp: exp.per_sim_suggested_label_means,
+                    cumulative=False,
+                ),
+                _build_paired_rounds_frame(
+                    random,
+                    lambda exp: exp.per_sim_suggested_label_means,
+                    cumulative=False,
+                ),
+                "Δ mean label (mean)",
+                ENCODER_ORDER,
+                zero_line=True,
+            )
+        )
+
+    panels = {
+        "Chosen sequences": lambda exp: _get_round_errors(
+            exp, "suggestions", error_metric
+        ),
+        "Unseen variants": lambda exp: _get_round_errors(exp, "scored", error_metric),
+    }
+
+    def build_panel_frame(pairs: list[Pair]) -> pd.DataFrame:
+        return pd.concat(
+            [
+                _build_paired_rounds_frame(pairs, per_sim, cumulative=False).assign(
+                    panel=panel
+                )
+                for panel, per_sim in panels.items()
+            ],
+            ignore_index=True,
+        )
+
+    st.subheader(f"{metric_name} Evolution")
+    _draw(
+        al_plots.build_rounds_by_model_chart(
+            build_panel_frame(surrogates),
+            build_panel_frame(random),
+            f"Δ {metric_name} (mean)",
+            ENCODER_ORDER,
+            zero_line=True,
+        )
+    )
+    st.caption(
+        ("Higher" if metric_name == "Accuracy" else "Lower")
+        + " is better. Lines: the mean change per round over replicates paired by seed."
+        + candidates_note
+    )
+
+    calibration = _build_paired_frame(surrogates, _compute_miscalibration)
+    if not calibration.empty:
+        st.subheader("Uncertainty Calibration")
+        _draw(
+            al_plots.build_grouped_metric_bars(
+                calibration,
+                calibration.head(0),
+                format_change_titles(
+                    {"miscalibration": "Miscalibration"}, {"miscalibration"}
+                ),
+                ENCODER_ORDER,
+            )
+        )
+        st.caption(
+            "Miscalibration: the mean distance between the observed and expected coverage "
+            "of the levels on Campaigns. Bars, dots and whiskers as above; the random model "
+            "is left out." + candidates_note
+        )
+
+
 def _render_header(exp: DashboardExperimentData) -> None:
     summary = exp.summary
     st.caption(f"`{exp.name}` · {summary['n_simulations']} replicates")
@@ -866,11 +1170,15 @@ def main():
     )
     exps = by_dataset[selected_dataset]
 
-    subset = _filter_experiments(exps)
+    st.sidebar.subheader("Campaign Setup")
+    same_throughput = _filter_throughput(exps)
+    subset = _filter_experiments(same_throughput)
     st.sidebar.subheader("Display")
     error_metric = st.sidebar.radio("Error metric", ["RMSE", "MAE"], horizontal=True)
 
-    main_tabs = st.tabs(["Dataset statistics", "Campaigns", "Single campaign"])
+    main_tabs = st.tabs(
+        ["Dataset statistics", "Campaigns", "Ablations", "Single campaign"]
+    )
 
     with main_tabs[0]:
         _render_dataset_tab(selected_dataset, exps)
@@ -879,6 +1187,9 @@ def main():
         _render_campaigns_tab(subset, error_metric)
 
     with main_tabs[2]:
+        _render_ablations_tab(same_throughput, error_metric)
+
+    with main_tabs[3]:
         encoders = list(
             dict.fromkeys(
                 [e for e in ENCODER_LABELS if any(x.embedder == e for x in subset)]

@@ -720,6 +720,7 @@ def build_rounds_by_model_chart(
     y_title: str,
     encoder_order: list[str],
     log_y: bool = False,
+    zero_line: bool = False,
 ) -> alt.FacetChart:
     """A subplot per surrogate model, and per panel if `rounds` has a panel column, with a line
     per encoder and the random model as a dashed line in each.
@@ -730,6 +731,7 @@ def build_rounds_by_model_chart(
         y_title: Title of the y axis.
         encoder_order: Encoders in legend order.
         log_y: Draw the y axis on a log scale.
+        zero_line: Mark zero with a black line, for changes.
     """
     panels = ["panel"] if "panel" in rounds.columns else []
     n_rounds = int(rounds["round"].max()) if not rounds.empty else 1
@@ -772,6 +774,8 @@ def build_rounds_by_model_chart(
                 ],
             )
         )
+    if zero_line:
+        layers.append(alt.Chart().mark_rule(color="black").encode(y=alt.datum(0)))
     facets = {"column": alt.Column("model:N", title=None)}
     if panels:
         facets["row"] = alt.Row(
