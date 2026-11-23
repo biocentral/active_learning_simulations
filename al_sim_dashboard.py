@@ -1,46 +1,91 @@
 """Streamlit dashboard for active learning simulation results.
 
-Run with:
+Compress the results, then run the dashboard:
+    uv run python -m biocentral_al_sim.compress_reports
     uv run streamlit run al_sim_dashboard.py
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+import altair as alt
 import numpy as np
-import pandas as pd
+import polars as pl
 import streamlit as st
-from biocentral_api import ProjectionResult
+from biocentral_api import CommonEmbedder, ProjectionResult
 from biocentral_vis import BiocentralChart
-from bioengineer_active_learning_simulations import plots as al_plots
-from bioengineer_active_learning_simulations.dashboard_models import (
+from biotrainer_core.data_classes import SequenceData
+
+from biocentral_al_sim import plots as al_plots
+from biocentral_al_sim.compress_reports import percentage_cutoff
+from biocentral_al_sim.dashboard_models import (
+    UNCERTAINTY_CALIBRATION_LEVELS,
+    DashboardCampaignSetup,
     DashboardCompressedData,
     DashboardExperimentData,
 )
-from bioengineer_active_learning_simulations.datasets import ALSimulatorDataset
-from bioengineer_active_learning_simulations.paths import PROJECTIONS_DIR, RESULTS_DIR
-from bioengineer_active_learning_simulations.simulators import (
-    ActiveLearningSimulator,
-    get_simulator,
-)
-from biotrainer_core.data_classes import SequenceData
-from biotrainer_core.input_files import read_FASTA
+from biocentral_al_sim.datasets import ALSimulatorDataset
+from biocentral_al_sim.paths import PROJECTIONS_DIR, RESULTS_DIR
+from biocentral_al_sim.settings import THROUGHPUTS
+from biocentral_al_sim.splits import substitutions
 
 st.set_page_config(page_title="AL Simulation Dashboard", layout="wide")
 
 
+def _draw(
+    chart: alt.Chart | alt.LayerChart | alt.FacetChart | alt.ConcatChart, **kwargs
+) -> None:
+    """Draw an Altair chart, with black axis, legend and facet text in the light theme."""
+    if st.context.theme.type == "light":
+        # These replace any axis, legend or header config; the charts drawn here set none
+        chart = (
+            chart.configure_axis(labelColor="black", titleColor="black")
+            .configure_legend(labelColor="black", titleColor="black")
+            .configure_header(labelColor="black", titleColor="black")
+        )
+    st.altair_chart(chart, **kwargs)
+
+
+ENCODER_LABELS = {
+    CommonEmbedder.RANDOM_EMBEDDER.value: "random",
+    CommonEmbedder.LENGTH_EMBEDDER.value: "length",
+    CommonEmbedder.ONE_HOT_ENCODING.value: "OHE",
+    CommonEmbedder.BLOSUM62.value: "Blosum62",
+    CommonEmbedder.ESM2_8M.value: "ESM-2 (8M)",
+    CommonEmbedder.ESM2_650M.value: "ESM-2 (650M)",
+    CommonEmbedder.ProtT5.value: "ProtT5",
+}
+ENCODER_ORDER = list(ENCODER_LABELS.values())
+
+
+def _get_encoder_label(embedder: str) -> str:
+    return ENCODER_LABELS.get(embedder, embedder)
+
+
 @st.cache_data(show_spinner=True)
 def _get_run_files():
-    return list(RESULTS_DIR.glob("*.json"))
+    return list(RESULTS_DIR.glob("compressed_dashboard_data_*.json"))
+
+
+@st.cache_resource(show_spinner=True)
+def _load_pool(selected_dataset: str) -> list[SequenceData]:
+    """Sequences the dataset's campaigns drew from."""
+    return ALSimulatorDataset[selected_dataset].pool()
 
 
 @st.cache_data(show_spinner=True)
-def _load_dataset_sequences(selected_dataset: str) -> list[SequenceData]:
-    al_sim_dataset_path = ALSimulatorDataset[selected_dataset].to_path()
-    return read_FASTA(al_sim_dataset_path)
+def _load_depths(selected_dataset: str) -> dict[str, int] | None:
+    """Get number of mutations of each sequence. Returns None if there is no parent sequence."""
+    reference = ALSimulatorDataset[selected_dataset].reference_sequence()
+    if reference is None:
+        return None
+    return {
+        data_point.seq_id: len(substitutions(data_point.seq, reference))
+        for data_point in _load_pool(selected_dataset)
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -71,212 +116,257 @@ def _load_projection(
     return None
 
 
-@st.cache_data(show_spinner=True)
-def _load_simulator(selected_dataset: str) -> ActiveLearningSimulator:
-    al_sim_dataset = ALSimulatorDataset[selected_dataset]
-    return get_simulator(al_sim_dataset)
+def _describe_hits(exp: DashboardExperimentData) -> str:
+    match exp.summary["optimization_mode"]:
+        case "MAXIMIZE":
+            return f"Pool members in the top {exp.setup.hit_percentile:g}% of the pool's labels."
+        case "MINIMIZE":
+            return f"Pool members in the bottom {exp.setup.hit_percentile:g}% of the pool's labels."
+        case _:
+            return "Pool members that meet the target."
 
 
-def _render_simulations_aggregate(exp: DashboardExperimentData) -> None:
-    st.subheader("Overall performance summary")
+def _compute_hit_threshold(
+    exp: DashboardExperimentData, labels: list[float]
+) -> float | None:
+    """Compute hit threshold of annotations from servec's percentile rule."""
+    match exp.summary["optimization_mode"]:
+        case "MAXIMIZE":
+            return float(np.percentile(labels, 100 - exp.setup.hit_percentile))
+        case "MINIMIZE":
+            return float(np.percentile(labels, exp.setup.hit_percentile))
+        case _:
+            return None
 
-    cols = st.columns(4)
-    cols[0].metric("Total number of hits", exp.aggregated_hits)
-    cols[1].metric("Total number of suggestions", exp.aggregated_suggestions)
 
-    total_sims = len(exp.per_sim_is_success)
-    avg_hits = exp.aggregated_hits / total_sims if total_sims > 0 else 0
-    success_rate = (
-        sum(1 for s in exp.per_sim_is_success if s) / total_sims
-        if total_sims > 0
-        else 0
+def _summarize_potential_hits(exp: DashboardExperimentData, n_pool: int) -> str:
+    n_potential_hits = len(exp.potential_hits)
+    return f"{n_potential_hits} ({100 * n_potential_hits / n_pool:.2f} % of the pool)"
+
+
+def _describe_candidate_source(setup: DashboardCampaignSetup) -> str:
+    if not setup.generate_candidates:
+        return "Pool"
+    plural = "" if setup.n_substitutions == 1 else "s"
+    return f"Generated ({setup.n_substitutions} substitution{plural})"
+
+
+def _describe_stopping_criteria(setup: DashboardCampaignSetup) -> str:
+    criteria = []
+    if setup.max_labels_budget is not None:
+        criteria.append(f"a budget of {setup.max_labels_budget} labels")
+    if setup.n_max_iterations is not None:
+        criteria.append(f"{setup.n_max_iterations} rounds")
+    if setup.n_hits is not None:
+        criteria.append(f"{setup.n_hits} hits")
+    if setup.max_consecutive_failures is not None:
+        criteria.append(f"{setup.max_consecutive_failures} rounds without a hit")
+    return "Stops at whichever comes first: " + ", ".join(criteria)
+
+
+def _describe_throughput(setup: DashboardCampaignSetup) -> str:
+    """Shape of the campaign, led by the name of the throughput preset it follows."""
+    shape = (
+        f"{setup.n_start} + {setup.n_max_iterations} × "
+        f"{setup.n_suggestions_per_iteration}"
+    )
+    for preset in THROUGHPUTS.values():
+        if (
+            preset.n_start,
+            preset.n_iterations,
+            preset.n_suggestions_per_iteration,
+        ) == (
+            setup.n_start,
+            setup.n_max_iterations,
+            setup.n_suggestions_per_iteration,
+        ):
+            return f"{preset.short_name} ({shape})"
+    return shape
+
+
+def _get_arm(exp: DashboardExperimentData) -> tuple:
+    return exp.dataset_id, exp.embedder, exp.model
+
+
+ABLATIONS: dict[str, Callable[[DashboardCampaignSetup], bool]] = {
+    "Delta embeddings": lambda setup: setup.use_delta_embeddings,
+    "Generated candidates": lambda setup: setup.generate_candidates,
+}
+
+
+def _filter_throughput(
+    experiments: list[DashboardExperimentData],
+) -> list[DashboardExperimentData]:
+    """Narrow a dataset's experiments to one throughput."""
+    by_size = sorted(
+        experiments,
+        key=lambda e: (e.setup.n_start, e.setup.n_suggestions_per_iteration),
+    )
+    throughput = st.sidebar.radio(
+        "Throughput",
+        list(dict.fromkeys(_describe_throughput(e.setup) for e in by_size)),
+        help="Starting set + rounds × sequences chosen per round",
+    )
+    return [e for e in experiments if _describe_throughput(e.setup) == throughput]
+
+
+def _filter_experiments(
+    experiments: list[DashboardExperimentData],
+) -> list[DashboardExperimentData]:
+    """Filter experiments to one candidate source and embedding variant."""
+    by_source = sorted(experiments, key=lambda e: e.setup.n_substitutions or 0)
+    source = st.sidebar.radio(
+        "Candidate generation",
+        list(dict.fromkeys(_describe_candidate_source(e.setup) for e in by_source)),
+        help="Pool: random unseen variants of the landscape. Generated: mutants of the "
+        "variants measured so far.",
+    )
+    experiments = [
+        e for e in experiments if _describe_candidate_source(e.setup) == source
+    ]
+
+    if not any(e.setup.use_delta_embeddings for e in experiments):
+        return experiments
+    delta = st.sidebar.radio(
+        "Delta embeddings",
+        ["Off", "On"],
+        horizontal=True,
+    )
+    if delta == "Off":
+        return [e for e in experiments if not e.setup.use_delta_embeddings]
+    with_delta = {_get_arm(e) for e in experiments if e.setup.use_delta_embeddings}
+    return [
+        e
+        for e in experiments
+        if e.setup.use_delta_embeddings or _get_arm(e) not in with_delta
+    ]
+
+
+def _build_seed_rounds_frame(
+    seeds: list[int], per_sim: list[list[float]]
+) -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {"seed": seed, "round": i + 1, "value": value}
+            for seed, values in zip(seeds, per_sim)
+            for i, value in enumerate(values)
+        ],
+        schema={"seed": pl.Int64, "round": pl.Int64, "value": pl.Float64},
     )
 
-    cols[2].metric("Avg. hits per campaign", f"{avg_hits:.2f}")
-    cols[3].metric("Success rate", f"{success_rate:.1%}")
 
+def _render_simulations_aggregate(
+    exp: DashboardExperimentData,
+    error_metric: str,
+    projection_result: ProjectionResult | None,
+) -> None:
     summary = exp.summary
-    is_discrete = summary["is_discrete"]
-    metric_name = "Accuracy" if is_discrete else "MAE"
+    threshold = summary["n_hits_threshold"]
 
-    # We need to compute stats for the charts
-    max_iterations = max((len(m) for m in exp.per_sim_metrics_total), default=0)
-    success_count = sum(1 for s in exp.per_sim_is_success if s)
+    # Success needs a hit threshold to be measured against
+    if threshold is not None:
+        total_sims = len(exp.per_sim_is_success)
+        success_count = sum(1 for s in exp.per_sim_is_success if s)
+        st.metric("Success rate", f"{success_count / total_sims:.1%}")
 
-    convergence_iterations, _, _ = al_plots._compute_convergence_stats(
-        per_sim_n_hits=exp.per_sim_n_hits,
-        n_hits_threshold=summary["n_hits_threshold"],
-    )
-
-    hits_per_sim = [sum(s) for s in exp.per_sim_n_hits]
-    best_idx = np.argmax(hits_per_sim)
-    worst_idx = np.argmin(hits_per_sim)
-
-    perf_summary_chart = al_plots.build_performance_summary_chart(
-        success_count=success_count,
-        total_runs=len(exp.per_sim_is_success),
-        convergence_iterations=convergence_iterations,
-        max_iterations=max_iterations,
-    )
-    st.altair_chart(perf_summary_chart.interactive(), use_container_width=True)
-
-    st.subheader("Target discovery progress")
-    cum_success_chart = al_plots.build_mean_cumulative_successes_chart(
-        per_sim_n_hits=exp.per_sim_n_hits,
-        per_sim_is_success=exp.per_sim_is_success,
-        target_threshold=summary["n_hits_threshold"],
-    )
-    st.altair_chart(cum_success_chart.interactive(), use_container_width=True)
-
-    st.subheader("Model performance evolution")
-    metric_evo_chart = al_plots.build_mean_metric_evolution_chart(
-        per_sim_metrics_total=exp.per_sim_metrics_total,
-        best_run_metrics=exp.per_sim_metrics_total[best_idx],
-        worst_run_metrics=exp.per_sim_metrics_total[worst_idx],
-        metric_name=metric_name,
-    )
-    st.altair_chart(metric_evo_chart.interactive(), use_container_width=True)
-
-    # Added: chart with suggestions metric overlay if available
-    if exp.per_sim_metrics_suggestions:
-        st.subheader("Model performance evolution (Suggestions) — mean per simulation")
-        # Build a custom overlay chart?
-        # Actually al_plots.build_mean_metric_evolution_chart doesn't seem to support suggestions
-        # But we can at least show the mean suggestions metric
-        suggestions_chart = al_plots.build_mean_metric_evolution_chart(
-            per_sim_metrics_total=exp.per_sim_metrics_suggestions,
-            best_run_metrics=exp.per_sim_metrics_suggestions[best_idx],
-            worst_run_metrics=exp.per_sim_metrics_suggestions[worst_idx],
-            metric_name=f"{metric_name} (Suggestions)",
+        convergence_iterations, _, _ = al_plots._compute_convergence_stats(
+            per_sim_n_hits=exp.per_sim_n_hits,
+            n_hits_threshold=threshold,
         )
-        st.altair_chart(suggestions_chart.interactive(), use_container_width=True)
+        perf_summary_chart = al_plots.build_performance_summary_chart(
+            success_count=success_count,
+            total_runs=total_sims,
+            convergence_iterations=convergence_iterations,
+            max_iterations=max((len(m) for m in exp.per_sim_metrics_total), default=0),
+        )
+        _draw(perf_summary_chart, width="stretch")
 
-    unique_hits, _ = _extract_unique_hits([exp])
-    dataset_sequences = _load_dataset_sequences(exp.dataset_id.name)
-    projection_result = _load_projection(
-        dataset_id=exp.dataset_id, embedder_name=exp.embedder
+    seeds = [single_sim.seed for single_sim in exp.single_sims]
+    st.subheader("Cumulative Hits")
+    _draw(
+        al_plots.build_replicate_rounds_chart(
+            _build_seed_rounds_frame(
+                seeds, [np.cumsum(n_hits).tolist() for n_hits in exp.per_sim_n_hits]
+            ),
+            "Cumulative hits",
+            mean_line=False,
+            target=threshold,
+        ),
+        width="stretch",
     )
+
+    metric_name = "Accuracy" if summary["is_discrete"] else error_metric
+    panels = {"Chosen sequences": "suggestions", "Unseen variants": "scored"}
+    errors = pl.concat(
+        [
+            _build_seed_rounds_frame(
+                seeds, _get_round_errors(exp, subset, error_metric)
+            ).with_columns(panel=pl.lit(panel))
+            for panel, subset in panels.items()
+        ]
+    )
+    st.subheader(f"{metric_name} Evolution")
+    _draw(
+        al_plots.build_replicate_rounds_chart(
+            errors, metric_name, mean_line=True, log_y=metric_name != "Accuracy"
+        )
+    )
+    st.caption(
+        "Points: the replicates, line: their mean"
+        + ("; y-axis logarithmic" if metric_name != "Accuracy" else "")
+        + ". Unseen variants as on the Campaigns tab."
+    )
+
     if projection_result is None:
-        st.warning("Projection not available for this experiment.")
         return
-    else:
-        chart_projection = BiocentralChart.projection_result(
-            projection_result=projection_result,
-            dataset=dataset_sequences,
-            highlight_ids=unique_hits,
-            highlight_name="Unique Hits",
-        )
-        st.altair_chart(chart_projection.chart.interactive(), use_container_width=True)
+    unique_hits, _ = _extract_unique_hits([exp])
+    chart_projection = BiocentralChart.projection_result(
+        projection_result=projection_result,
+        dataset=_load_pool(exp.dataset_id.name),
+        highlight_ids=unique_hits,
+        highlight_name="Unique Hits",
+    )
+    _draw(chart_projection.chart.interactive(), width="stretch")
 
 
 def _render_single_simulation(
-    exp: DashboardExperimentData, sim_data, summary: dict
+    exp: DashboardExperimentData,
+    sim_data,
+    projection_result: ProjectionResult | None,
 ) -> None:
+    """One replicate: why it stopped, its hits and failures per round, its raw stats and,
+    when there is one, its projection."""
+    seed = sim_data.seed
     stop_reasons = sim_data.stop_reasons
-
-    cols_row1 = st.columns(2)
-    cols_row1[0].metric("Seed", sim_data.seed)
-    cols_row1[1].metric("Success", sim_data.is_success)
-    st.metric("Primary Stop Reason", stop_reasons[0])
-
-    metric_name = "Accuracy" if summary["is_discrete"] else "MAE"
+    st.subheader(f"Seed {seed}")
+    status = f"Stopped: {stop_reasons[0]}"
+    if sim_data.n_hits_threshold is not None:
+        status += " · successful" if sim_data.is_success else " · not successful"
+    st.caption(status)
 
     n_iteration_hits = list(map(len, sim_data.iteration_hits))
 
-    chart_metric = al_plots.build_metric_evolution_chart(
-        iteration_metrics_total=sim_data.iteration_metrics_total,
-        iteration_metrics_suggestions=sim_data.iteration_metrics_suggestions,
-        n_iteration_hits=n_iteration_hits,
-        metric_name=metric_name,
-    )
-
-    chart_failures = al_plots.build_consecutive_failures_chart(
-        iteration_consecutive_failures=sim_data.iteration_consecutive_failures,
-        stop_reasons=stop_reasons,
-    )
-
-    chart_successes = al_plots.build_n_hits_chart(n_iteration_hits=n_iteration_hits)
-
+    # Keyed per seed, as replicates can draw identical charts
     col_left, col_right = st.columns(2)
     with col_left:
-        st.altair_chart(chart_metric.interactive(), use_container_width=True)
-        st.altair_chart(chart_failures.interactive(), use_container_width=True)
-    with col_right:
-        st.altair_chart(chart_successes.interactive(), use_container_width=True)
-
-    # Projection Chart
-    projection_result = _load_projection(
-        dataset_id=exp.dataset_id, embedder_name=exp.embedder
-    )
-    if projection_result is None:
-        st.warning("Projection not available for this experiment.")
-        return
-    else:
-        # Projection Chart Navigation
-        dataset_sequences = _load_dataset_sequences(exp.dataset_id.name)
-
-        # Create options: Full dataset + each iteration
-        projection_options = ["Full Dataset"] + [
-            f"Iteration {i + 1}" for i in range(len(sim_data.iteration_hits))
-        ]
-
-        # Initialize session state for projection selection if not exists
-        if "projection_view_idx" not in st.session_state:
-            st.session_state.projection_view_idx = 0
-
-        iteration_projections = []
-        all_iteration_hits = set()
-        for iteration_hits in sim_data.iteration_hits:
-            for hit in iteration_hits:
-                all_iteration_hits.add(hit)
-            chart_projection = BiocentralChart.projection_result(
-                projection_result=projection_result,
-                dataset=dataset_sequences,
-                highlight_ids=set(iteration_hits),
-                highlight_name="Iteration Hits",
-            )
-            iteration_projections.append(chart_projection)
-
-        chart_projection_full = BiocentralChart.projection_result(
-            projection_result=projection_result,
-            dataset=dataset_sequences,
-            highlight_ids=set(all_iteration_hits),
-            highlight_name="All Hits",
+        _draw(
+            al_plots.build_n_hits_chart(n_iteration_hits=n_iteration_hits),
+            width="stretch",
+            key=f"hits_{seed}",
         )
-        projections = [chart_projection_full] + iteration_projections
-
-        # Navigation controls
-        col1, col2, col3 = st.columns([1, 2, 1])
-
-        with col1:
-            if st.button(
-                "← Previous", disabled=st.session_state.projection_view_idx == 0
-            ):
-                st.session_state.projection_view_idx -= 1
-                st.rerun()
-
-        with col2:
-            project_view_idx = st.session_state.projection_view_idx
-            chart_title = projection_options[project_view_idx]
-            st.markdown(f"**{chart_title}**")
-
-        with col3:
-            if st.button(
-                "Next →",
-                disabled=st.session_state.projection_view_idx
-                == len(projection_options) - 1,
-            ):
-                st.session_state.projection_view_idx += 1
-                st.rerun()
-
-        project_view_idx = st.session_state.projection_view_idx
-        chart_projection = projections[project_view_idx]
-
-        st.altair_chart(chart_projection.chart.interactive(), use_container_width=True)
+    with col_right:
+        _draw(
+            al_plots.build_consecutive_failures_chart(
+                iteration_consecutive_failures=sim_data.iteration_consecutive_failures,
+                stop_reasons=stop_reasons,
+            ),
+            width="stretch",
+            key=f"failures_{seed}",
+        )
 
     with st.expander("Raw stats"):
         st.markdown(f"- **Stop reasons:** {stop_reasons}")
-        st.markdown(f"- **Total iterations:** {sim_data.iteration_results_count}")
+        st.markdown(f"- **Total rounds:** {sim_data.iteration_results_count}")
         st.markdown(
             f"- **iteration_metrics_total:** `{sim_data.iteration_metrics_total}`"
         )
@@ -288,6 +378,60 @@ def _render_single_simulation(
         )
         st.markdown(f"- **n_iteration_hits:** `{n_iteration_hits}`")
         st.markdown(f"- **iteration_hits:** `{sim_data.iteration_hits}`")
+
+    if projection_result is None:
+        return
+    dataset_sequences = _load_pool(exp.dataset_id.name)
+    projection_options = ["Full Dataset"] + [
+        f"Iteration {i + 1}" for i in range(len(sim_data.iteration_hits))
+    ]
+    view = f"projection_view_idx_{seed}"
+    if view not in st.session_state:
+        st.session_state[view] = 0
+
+    iteration_projections = []
+    all_iteration_hits = set()
+    for iteration_hits in sim_data.iteration_hits:
+        all_iteration_hits.update(iteration_hits)
+        iteration_projections.append(
+            BiocentralChart.projection_result(
+                projection_result=projection_result,
+                dataset=dataset_sequences,
+                highlight_ids=set(iteration_hits),
+                highlight_name="Iteration Hits",
+            )
+        )
+    chart_projection_full = BiocentralChart.projection_result(
+        projection_result=projection_result,
+        dataset=dataset_sequences,
+        highlight_ids=all_iteration_hits,
+        highlight_name="All Hits",
+    )
+    projections = [chart_projection_full] + iteration_projections
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col1:
+        if st.button(
+            "← Previous", disabled=st.session_state[view] == 0, key=f"previous_{seed}"
+        ):
+            st.session_state[view] -= 1
+            st.rerun()
+    with col2:
+        st.markdown(f"**{projection_options[st.session_state[view]]}**")
+    with col3:
+        if st.button(
+            "Next →",
+            disabled=st.session_state[view] == len(projection_options) - 1,
+            key=f"next_{seed}",
+        ):
+            st.session_state[view] += 1
+            st.rerun()
+
+    _draw(
+        projections[st.session_state[view]].chart.interactive(),
+        width="stretch",
+        key=f"projection_{seed}",
+    )
 
 
 def _extract_consecutive_failures_threshold(stop_reasons: list[str]) -> int | None:
@@ -338,386 +482,682 @@ def _extract_unique_hits(exps: list[DashboardExperimentData]) -> tuple[set[str],
     return all_unique_hits, bootstrap_std
 
 
-def _extract_average_hits_per_campaign(
-    exps: list[DashboardExperimentData],
-) -> tuple[float, float]:
-    all_single_sims = []
-    for e in exps:
-        all_single_sims.extend(e.single_sims)
-    n_all_hits_list = [
-        sum(list(map(len, single_sim.iteration_hits))) for single_sim in all_single_sims
-    ]
-    total_hits_mean = round(float(np.mean(n_all_hits_list)), 3)
-    total_hits_std = float(np.std(n_all_hits_list))
-    return total_hits_mean, total_hits_std
+def _get_round_errors(
+    exp: DashboardExperimentData, subset: str, error_metric: str
+) -> list[list[float]]:
+    """Per-round error of each replicate on its suggestions (`subset="suggestions"`) or every scored candidate (`subset="scored"`).
+    Accuracy for discrete targets.
+    """
+    if exp.per_sim_round_errors is None:
+        if subset == "suggestions":
+            return exp.per_sim_metrics_suggestions
+        return exp.per_sim_metrics_total
+    return exp.per_sim_round_errors[f"{error_metric.lower()}_{subset}"]
 
 
-def _render_inner_simulation_comparison(subset: list[DashboardExperimentData]) -> None:
-    st.header("Comparison")
-    mode = st.radio(
-        "Compare by",
-        ["Surrogate Model", "Embedder"],
-        key="InnerSimulationRadio",
-        horizontal=True,
+def _collect_replicate_metrics(
+    exp: DashboardExperimentData, error_metric: str
+) -> dict[str, Sequence[float | None]]:
+    """Each replicate's total hits, hit rate, and best label (unless target is discrete),
+    and the final round's prediction metrics, with `error_metric` as error. A ranking
+    metric is None for a replicate whose predictions cannot rank."""
+    hits = [sum(n_hits) for n_hits in exp.per_sim_n_hits]
+    metrics: dict[str, Sequence[float | None]] = {
+        "total_hits": hits,
+        "hit_rate": [
+            n_hits / n_suggestions if n_suggestions else 0.0
+            for n_hits, n_suggestions in zip(hits, exp.per_sim_n_suggestions)
+        ],
+    }
+    if exp.per_sim_best_label is not None:
+        metrics["best_label"] = exp.per_sim_best_label
+    final_round_metrics = exp.per_sim_final_round_metrics or []
+    for name in (final_round_metrics or [{}])[0]:
+        if name in ("mae", "rmse") and name != error_metric.lower():
+            continue
+        key = "final_error" if name in ("mae", "rmse") else f"final_{name}"
+        metrics[key] = [replicate[name] for replicate in final_round_metrics]
+    return metrics
+
+
+def _build_replicate_frame(
+    exps: list[DashboardExperimentData], error_metric: str
+) -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {
+                "metric": metric,
+                "encoder": _get_encoder_label(exp.embedder),
+                "model": exp.model,
+                "value": v,
+            }
+            for exp in exps
+            for metric, values in _collect_replicate_metrics(exp, error_metric).items()
+            for v in values
+            if v is not None
+        ],
+        schema=_REPLICATE_SCHEMA,
     )
 
-    group_by = "model" if mode == "Surrogate Model" else "embedder"
 
-    groups: dict[str, list[DashboardExperimentData]] = {}
-    for exp in subset:
-        key = getattr(exp, group_by)
-        if key not in groups:
-            groups[key] = []
-        if group_by == "embedder" and exp.model == "RANDOM":
-            continue  # Exclude random surrogate models from embedder comparison
-        groups[key].append(exp)
+_REPLICATE_SCHEMA = {
+    "metric": pl.String,
+    "encoder": pl.String,
+    "model": pl.String,
+    "value": pl.Float64,
+}
+_ROUNDS_SCHEMA = {
+    "model": pl.String,
+    "encoder": pl.String,
+    "round": pl.Int64,
+    "value": pl.Float64,
+}
 
-    comparison_data = []
-    cross_cum_inputs = {}
-    cross_metric_inputs = {}
-    cross_targets = {}
-    metric_names = set()
 
-    for key, exps in groups.items():
-        all_hits = sum(e.aggregated_hits for e in exps)
-        all_suggestions = sum(e.aggregated_suggestions for e in exps)
-        all_unique_hits, unique_hits_std = _extract_unique_hits(exps)
+def _pad_rounds(
+    per_sim: Sequence[Sequence[float]], cumulative: bool, n_rounds: int
+) -> np.ndarray:
+    """Replicates by rounds. A replicate that stopped early keeps its final total in
+    cumulative series and is NaN in the others."""
+    padded = []
+    for values in per_sim:
+        values = np.cumsum(values).tolist() if cumulative else list(values)
+        fill = values[-1] if cumulative and values else np.nan
+        padded.append(values + [fill] * (n_rounds - len(values)))
+    return np.array(padded, dtype=float)
 
-        all_is_success = [s for e in exps for s in e.per_sim_is_success]
-        total_campaigns = len(all_is_success)
 
-        conv_speeds = []
-        for e in exps:
-            target_threshold = e.summary["n_hits_threshold"]
-            for i, is_succ in enumerate(e.per_sim_is_success):
-                if is_succ:
-                    cumsum = np.cumsum(e.per_sim_n_hits[i])
-                    converged_at = np.where(cumsum >= target_threshold)[0]
-                    if len(converged_at) > 0:
-                        conv_speeds.append(int(converged_at[0]) + 1)
+def _average_per_round(
+    per_sim: Sequence[Sequence[float]], cumulative: bool
+) -> list[float]:
+    """Per-round mean over replicates. Stopped replicates' totals are kept in cumulative series."""
+    n_rounds = max(map(len, per_sim), default=0)
+    return np.nanmean(_pad_rounds(per_sim, cumulative, n_rounds), axis=0).tolist()
 
-        avg_conv = np.mean(conv_speeds) if conv_speeds else None
-        avg_hits, _ = _extract_average_hits_per_campaign(exps)
-        comparison_data.append(
+
+def _build_rounds_frame(
+    subset: list[DashboardExperimentData],
+    per_sim: Callable[[DashboardExperimentData], Sequence[Sequence[float]] | None],
+    cumulative: bool,
+) -> pl.DataFrame:
+    """Each campaign's mean per round, leaving out campaigns without the series."""
+    return pl.DataFrame(
+        [
             {
-                mode: key,
-                "Total Hits": all_hits,
-                "Unique Hits": len(all_unique_hits),
-                "Unique Hits Std. Dev.": f"{unique_hits_std:.2f}",
-                "Number of Campaigns": total_campaigns,
-                "Total Suggestions": all_suggestions,
-                "Hit Rate": f"{all_hits / all_suggestions:.2%}"
-                if all_suggestions > 0
-                else "0%",
-                "Avg. Hits per Campaign": f"{avg_hits:.2f}",
-                "Percentage of successful campaigns": f"{sum(all_is_success) / total_campaigns:.1%}"
-                if total_campaigns > 0
-                else "0.0%",
-                "Avg. Convergence Iteration": f"{avg_conv:.2f}"
-                if avg_conv is not None
-                else "N/A",
+                "model": exp.model,
+                "encoder": _get_encoder_label(exp.embedder),
+                "round": i + 1,
+                "value": v,
             }
+            for exp in subset
+            if (runs := per_sim(exp)) is not None
+            for i, v in enumerate(_average_per_round(runs, cumulative))
+        ],
+        schema=_ROUNDS_SCHEMA,
+    )
+
+
+def _build_calibration_frame(exps: list[DashboardExperimentData]) -> pl.DataFrame:
+    """Observed coverage per calibration level, averaged over replicates of each campaign."""
+    return pl.DataFrame(
+        [
+            {
+                "model": exp.model,
+                "encoder": _get_encoder_label(exp.embedder),
+                "expected": level,
+                "observed": float(observed),
+            }
+            for exp in exps
+            if exp.per_sim_calibration is not None
+            for level, observed in zip(
+                UNCERTAINTY_CALIBRATION_LEVELS, np.mean(exp.per_sim_calibration, axis=0)
+            )
+        ],
+        schema={
+            "model": pl.String,
+            "encoder": pl.String,
+            "expected": pl.Float64,
+            "observed": pl.Float64,
+        },
+    )
+
+
+def _describe_ndcg_cutoffs(exps: list[DashboardExperimentData], percentage: int) -> str:
+    """The n of NDCG@percentage% over the experiments' replicates, as a value or a range."""
+    ns = sorted(
+        {
+            percentage_cutoff(n_scored, percentage)
+            for exp in exps
+            for n_scored in exp.per_sim_final_round_scored
+        }
+    )
+    return f"n = {ns[0]}" if ns[0] == ns[-1] else f"n = {ns[0]}–{ns[-1]}"
+
+
+def _get_metric_titles(
+    exps: list[DashboardExperimentData], error_metric: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Subplot titles of the hit metrics and of the final round's prediction metrics."""
+    maximize = exps[0].summary["optimization_mode"] == "MAXIMIZE"
+    hit_titles = {
+        "total_hits": "Total Hits",
+        "hit_rate": "Hit Rate",
+        "best_label": "Maximum Fitness Achieved"
+        if maximize
+        else "Minimum Label Achieved",
+    }
+    prediction_titles = {
+        "final_error": error_metric,
+        "final_spearman": "Spearman Correlation",
+        "final_ndcg@10": "NDCG@10",
+        "final_ndcg@96": "NDCG@96",
+        "final_ndcg@1%": f"NDCG@1% ({_describe_ndcg_cutoffs(exps, 1)})",
+        "final_ndcg@10%": f"NDCG@10% ({_describe_ndcg_cutoffs(exps, 10)})",
+    }
+    return hit_titles, prediction_titles
+
+
+def _render_campaigns_tab(
+    subset: list[DashboardExperimentData], error_metric: str
+) -> None:
+    random = [exp for exp in subset if exp.model == "RANDOM"]
+    surrogates = [exp for exp in subset if exp.model != "RANDOM"]
+    metric_name = "Accuracy" if subset[0].summary["is_discrete"] else error_metric
+    hit_titles, prediction_titles = _get_metric_titles(subset, error_metric)
+    replicates = _build_replicate_frame(surrogates, error_metric)
+    baselines = _build_replicate_frame(random, error_metric)
+    present = set(replicates["metric"])
+    n_replicates = sorted({len(exp.per_sim_n_hits) for exp in subset})
+    random_note = (
+        " Dashed line: the random model, which runs with one-hot encoding only."
+        if random
+        else ""
+    )
+
+    st.subheader("Hits")
+    _draw(
+        al_plots.build_grouped_metric_bars(
+            replicates,
+            baselines,
+            {
+                metric: title
+                for metric, title in hit_titles.items()
+                if metric in present
+            },
+            ENCODER_ORDER,
+            columns=3,
+        )
+    )
+    st.caption(
+        f"Bars: mean over each campaign's {'/'.join(map(str, n_replicates))} replicates, "
+        "dots: the replicates, whiskers: standard error." + random_note
+    )
+
+    prediction_titles = {
+        metric: title
+        for metric, title in prediction_titles.items()
+        if metric in present
+    }
+    if prediction_titles:
+        st.subheader("Predictions on the Whole Landscape\\*")
+        _draw(
+            al_plots.build_grouped_metric_bars(
+                replicates, baselines, prediction_titles, ENCODER_ORDER, columns=2
+            )
+        )
+        st.caption(
+            "\\* For now on the variants the final round's model scored rather than the "
+            "whole landscape: with pool candidates a random sample of up to 1,000 unseen "
+            "variants, with generated candidates the generated mutants. NDCG ranks them by "
+            "prediction, with the labels min-max scaled to [0, 1] as gains; NDCG@k% looks at "
+            "the top k% of them. Spearman and NDCG leave out replicates whose predictions take "
+            "at most two values (the GP with the length embedder). Bars, dots and whiskers as "
+            "above." + random_note
         )
 
-    if group_by == "embedder":
-        st.markdown("*Note: Random surrogate models are excluded from the comparison.*")
-    st.table(pd.DataFrame(comparison_data))
-
-    st.subheader("Visual Comparison")
-    for exp in subset:
-        cross_cum_inputs[exp.name] = exp.per_sim_n_hits
-        cross_metric_inputs[exp.name] = exp.per_sim_metrics_total
-        cross_targets[exp.name] = exp.summary["n_hits_threshold"]
-        metric_names.add("Accuracy" if exp.summary["is_discrete"] else "MAE")
-
-    metric_name = ", ".join(sorted(metric_names)) if metric_names else "Metric"
-
-    st.subheader("Cumulative target successes — mean per experiment")
-    st.altair_chart(
-        al_plots.build_cross_experiment_cumulative_chart(
-            cross_cum_inputs, cross_targets
-        ).interactive(),
-        use_container_width=True,
+    st.subheader("Cumulative Hits")
+    _draw(
+        al_plots.build_rounds_by_model_chart(
+            _build_rounds_frame(
+                surrogates, lambda exp: exp.per_sim_n_hits, cumulative=True
+            ),
+            _build_rounds_frame(
+                random, lambda exp: exp.per_sim_n_hits, cumulative=True
+            ),
+            "Cumulative hits (mean)",
+            ENCODER_ORDER,
+        )
     )
-    st.subheader(f"Model performance ({metric_name}) — mean per experiment")
-    st.altair_chart(
-        al_plots.build_cross_experiment_metric_chart(
-            cross_metric_inputs, metric_name
-        ).interactive(),
-        use_container_width=True,
+
+    if subset[0].per_sim_suggested_label_means is not None:
+        st.subheader("Mean Label of Chosen Sequences")
+        _draw(
+            al_plots.build_rounds_by_model_chart(
+                _build_rounds_frame(
+                    surrogates,
+                    lambda exp: exp.per_sim_suggested_label_means,
+                    cumulative=False,
+                ),
+                _build_rounds_frame(
+                    random,
+                    lambda exp: exp.per_sim_suggested_label_means,
+                    cumulative=False,
+                ),
+                "Mean label (mean)",
+                ENCODER_ORDER,
+            )
+        )
+
+    panels = {
+        "Chosen sequences": lambda exp: _get_round_errors(
+            exp, "suggestions", error_metric
+        ),
+        "Unseen variants": lambda exp: _get_round_errors(exp, "scored", error_metric),
+    }
+
+    def build_panel_frame(exps: list[DashboardExperimentData]) -> pl.DataFrame:
+        return pl.concat(
+            [
+                _build_rounds_frame(exps, per_sim, cumulative=False).with_columns(
+                    panel=pl.lit(panel)
+                )
+                for panel, per_sim in panels.items()
+            ]
+        )
+
+    st.subheader(f"{metric_name} Evolution")
+    _draw(
+        al_plots.build_rounds_by_model_chart(
+            build_panel_frame(surrogates),
+            build_panel_frame(random),
+            f"{metric_name} (mean)",
+            ENCODER_ORDER,
+            log_y=metric_name != "Accuracy",
+        )
     )
+    st.caption(
+        ("y-axis logarithmic. " if metric_name != "Accuracy" else "")
+        + "Unseen variants: the candidates each round's model scored before choosing the "
+        "sequences to measure. With pool candidates, a random sample of up to 1,000 variants the model "
+        "has not seen; with generated candidates, mutants of the variants it has measured. "
+        "The server does not record the error on the variants the model has learned."
+    )
+
+    calibration = _build_calibration_frame(surrogates)
+    if not calibration.is_empty():
+        st.subheader("Uncertainty Calibration")
+        _draw(al_plots.build_calibration_chart(calibration, ENCODER_ORDER))
+        st.caption(
+            "Share of the candidates each round's model scored whose label lies within the "
+            "central interval of the predicted normal distribution, pooled over rounds and "
+            "averaged over replicates. Below the diagonal, the uncertainties are too narrow. "
+            "The random model's uncertainty is a constant, so it is left out."
+        )
+
+
+Pair = tuple[DashboardExperimentData, DashboardExperimentData]
+
+
+def _pair_campaigns(
+    experiments: list[DashboardExperimentData],
+    reference: dict[str, bool],
+    compared: dict[str, bool],
+) -> list[Pair]:
+    """(reference, compared) campaigns of each encoder and model that ran with both setups,
+    each setup given as its ablations."""
+
+    def index_by_config(setup: dict[str, bool]) -> dict[tuple, DashboardExperimentData]:
+        found: dict[tuple, list[DashboardExperimentData]] = {}
+        for exp in experiments:
+            if all(ABLATIONS[name](exp.setup) == on for name, on in setup.items()):
+                found.setdefault((exp.embedder, exp.model), []).append(exp)
+        # Several campaigns per encoder and model would leave the pairing ambiguous
+        return {config: exps[0] for config, exps in found.items() if len(exps) == 1}
+
+    references, compareds = index_by_config(reference), index_by_config(compared)
+    return [
+        (references[config], compareds[config])
+        for config in references
+        if config in compareds
+    ]
+
+
+def _build_paired_frame(
+    pairs: list[Pair],
+    values: Callable[[DashboardExperimentData], Mapping[str, Sequence[float | None]]],
+) -> pl.DataFrame:
+    """Change from the reference to the compared campaign per metric and replicate."""
+    rows = []
+    for reference, compared in pairs:
+        before, after = values(reference), values(compared)
+        for metric in before.keys() & after.keys():
+            # Replicate i runs on the same seed, and so starting set, in every setup
+            for old, new in zip(before[metric], after[metric]):
+                if old is not None and new is not None:
+                    rows.append(
+                        {
+                            "metric": metric,
+                            "encoder": _get_encoder_label(compared.embedder),
+                            "model": compared.model,
+                            "value": new - old,
+                        }
+                    )
+    return pl.DataFrame(rows, schema=_REPLICATE_SCHEMA)
+
+
+def _build_paired_rounds_frame(
+    pairs: list[Pair],
+    per_sim: Callable[[DashboardExperimentData], Sequence[Sequence[float]] | None],
+    cumulative: bool,
+) -> pl.DataFrame:
+    """Mean change per round from the reference to the compared campaign, over replicates
+    paired by seed. Leave out pairs where either campaign doesn't have the series."""
+    rows = []
+    for reference, compared in pairs:
+        before, after = per_sim(reference), per_sim(compared)
+        if before is None or after is None:
+            continue
+        n_pairs = min(len(before), len(after))
+        before, after = before[:n_pairs], after[:n_pairs]
+        n_rounds = max(map(len, [*before, *after]), default=0)
+        change = _pad_rounds(after, cumulative, n_rounds) - _pad_rounds(
+            before, cumulative, n_rounds
+        )
+        if not change.size:
+            continue
+        # Rounds where a replicate stopped early are NaN; null leaves them out of the mean
+        means = pl.from_numpy(change).fill_nan(None).mean().row(0)
+        rows += [
+            {
+                "model": compared.model,
+                "encoder": _get_encoder_label(compared.embedder),
+                "round": i + 1,
+                "value": value,
+            }
+            for i, value in enumerate(means)
+            if value is not None
+        ]
+    return pl.DataFrame(rows, schema=_ROUNDS_SCHEMA)
+
+
+def _compute_miscalibration(exp: DashboardExperimentData) -> dict[str, list[float]]:
+    """Each replicate's mean distance between observed and expected coverage."""
+    if exp.per_sim_calibration is None:
+        return {}
+    return {
+        "miscalibration": [
+            float(np.mean(np.abs(np.array(observed) - UNCERTAINTY_CALIBRATION_LEVELS)))
+            for observed in exp.per_sim_calibration
+        ]
+    }
+
+
+def _render_ablations_tab(
+    experiments: list[DashboardExperimentData], error_metric: str
+) -> None:
+    available = [
+        name
+        for name, is_on in ABLATIONS.items()
+        if any(is_on(exp.setup) for exp in experiments)
+    ]
+    setups = []
+    for column, side in zip(st.columns(2), ("Reference", "Compared setup")):
+        column.markdown(f"**{side}**")
+        setups.append(
+            {name: column.toggle(name, key=f"{side}: {name}") for name in available}
+        )
+    reference, compared = setups
+    st.caption(
+        "Throughput and error metric follow the sidebar; its candidate generation and "
+        "delta embeddings choices do not apply here."
+    )
+    if reference == compared:
+        st.info("Pick two setups that differ in at least one ablation.")
+        return
+    pairs = _pair_campaigns(experiments, reference, compared)
+    if not pairs:
+        st.info("No encoder and surrogate model ran with both setups.")
+        return
+
+    random = [pair for pair in pairs if pair[1].model == "RANDOM"]
+    surrogates = [pair for pair in pairs if pair[1].model != "RANDOM"]
+    exps = [exp for pair in pairs for exp in pair]
+    maximize = exps[0].summary["optimization_mode"] == "MAXIMIZE"
+    metric_name = "Accuracy" if exps[0].summary["is_discrete"] else error_metric
+    hit_titles, prediction_titles = _get_metric_titles(exps, error_metric)
+    lower_is_better = {"final_error", "miscalibration"} | (
+        set() if maximize else {"best_label"}
+    )
+
+    def format_change_titles(
+        titles: dict[str, str], present: set[str]
+    ) -> dict[str, str]:
+        return {
+            metric: f"Δ {title}, {'↓' if metric in lower_is_better else '↑'} better"
+            for metric, title in titles.items()
+            if metric in present
+        }
+
+    def collect_metrics(
+        exp: DashboardExperimentData,
+    ) -> dict[str, Sequence[float | None]]:
+        return _collect_replicate_metrics(exp, error_metric)
+
+    changes = _build_paired_frame(surrogates, collect_metrics)
+    baselines = _build_paired_frame(random, collect_metrics)
+    present = set(changes["metric"])
+    other_candidates = any(
+        _describe_candidate_source(old.setup) != _describe_candidate_source(new.setup)
+        for old, new in pairs
+    )
+    candidates_note = (
+        " The two setups score different candidates, pool variants or generated mutants, "
+        "so these changes also reflect the candidates, not only the model."
+        if other_candidates
+        else ""
+    )
+    random_note = " Dashed line: the random model's change." if random else ""
+    bars_note = (
+        "Bars: mean change from the reference to the compared setup over replicates "
+        "paired by seed, which share their starting set; dots: each pair's change; "
+        "whiskers: standard error. Only encoders and models that ran with both setups "
+        "appear."
+    )
+
+    st.subheader("Hits")
+    _draw(
+        al_plots.build_grouped_metric_bars(
+            changes,
+            baselines,
+            format_change_titles(hit_titles, present),
+            ENCODER_ORDER,
+            columns=3,
+        )
+    )
+    st.caption(bars_note + random_note)
+
+    prediction_titles = format_change_titles(prediction_titles, present)
+    if prediction_titles:
+        st.subheader("Predictions on the Whole Landscape\\*")
+        _draw(
+            al_plots.build_grouped_metric_bars(
+                changes, baselines, prediction_titles, ENCODER_ORDER, columns=2
+            )
+        )
+        st.caption(
+            "\\* As on Campaigns, for now on the variants the final round's model scored."
+            + candidates_note
+            + " Bars, dots and whiskers as above."
+            + random_note
+        )
+
+    st.subheader("Cumulative Hits")
+    _draw(
+        al_plots.build_rounds_by_model_chart(
+            _build_paired_rounds_frame(
+                surrogates, lambda exp: exp.per_sim_n_hits, cumulative=True
+            ),
+            _build_paired_rounds_frame(
+                random, lambda exp: exp.per_sim_n_hits, cumulative=True
+            ),
+            "Δ cumulative hits (mean)",
+            ENCODER_ORDER,
+            zero_line=True,
+        )
+    )
+
+    if exps[0].per_sim_suggested_label_means is not None:
+        st.subheader("Mean Label of Chosen Sequences")
+        _draw(
+            al_plots.build_rounds_by_model_chart(
+                _build_paired_rounds_frame(
+                    surrogates,
+                    lambda exp: exp.per_sim_suggested_label_means,
+                    cumulative=False,
+                ),
+                _build_paired_rounds_frame(
+                    random,
+                    lambda exp: exp.per_sim_suggested_label_means,
+                    cumulative=False,
+                ),
+                "Δ mean label (mean)",
+                ENCODER_ORDER,
+                zero_line=True,
+            )
+        )
+
+    panels = {
+        "Chosen sequences": lambda exp: _get_round_errors(
+            exp, "suggestions", error_metric
+        ),
+        "Unseen variants": lambda exp: _get_round_errors(exp, "scored", error_metric),
+    }
+
+    def build_panel_frame(pairs: list[Pair]) -> pl.DataFrame:
+        return pl.concat(
+            [
+                _build_paired_rounds_frame(
+                    pairs, per_sim, cumulative=False
+                ).with_columns(panel=pl.lit(panel))
+                for panel, per_sim in panels.items()
+            ]
+        )
+
+    st.subheader(f"{metric_name} Evolution")
+    _draw(
+        al_plots.build_rounds_by_model_chart(
+            build_panel_frame(surrogates),
+            build_panel_frame(random),
+            f"Δ {metric_name} (mean)",
+            ENCODER_ORDER,
+            zero_line=True,
+        )
+    )
+    st.caption(
+        ("Higher" if metric_name == "Accuracy" else "Lower")
+        + " is better. Lines: the mean change per round over replicates paired by seed."
+        + candidates_note
+    )
+
+    calibration = _build_paired_frame(surrogates, _compute_miscalibration)
+    if not calibration.is_empty():
+        st.subheader("Uncertainty Calibration")
+        _draw(
+            al_plots.build_grouped_metric_bars(
+                calibration,
+                calibration.head(0),
+                format_change_titles(
+                    {"miscalibration": "Miscalibration"}, {"miscalibration"}
+                ),
+                ENCODER_ORDER,
+            )
+        )
+        st.caption(
+            "Miscalibration: the mean distance between the observed and expected coverage "
+            "of the levels on Campaigns. Bars, dots and whiskers as above; the random model "
+            "is left out." + candidates_note
+        )
 
 
 def _render_header(exp: DashboardExperimentData) -> None:
     summary = exp.summary
-    st.markdown(f"### `{exp.name}`")
-    cols_row1 = st.columns(3)
-    cols_row1[0].metric("Embedder", exp.embedder)
-    cols_row1[1].metric("Model", exp.model)
-    cols_row1[2].metric("Mode", str(summary["optimization_mode"]))
-
-    cols_row2 = st.columns(3)
-    cols_row2[0].metric("Sims", summary["n_simulations"])
-    cols_row2[1].metric(
-        "Successful", f"{summary['n_successful']}/{summary['n_simulations']}"
-    )
-    cols_row2[2].metric("Target threshold", summary["n_hits_threshold"])
-    if summary.get("discrete_targets"):
-        st.caption(f"Discrete targets: {', '.join(summary['discrete_targets'])}")
+    st.caption(f"`{exp.name}` · {summary['n_simulations']} replicates")
+    st.caption(_describe_stopping_criteria(exp.setup))
+    if summary["n_hits_threshold"] is not None:
+        cols = st.columns(2)
+        cols[0].metric(
+            "Successful", f"{summary['n_successful']}/{summary['n_simulations']}"
+        )
+        cols[1].metric("Target threshold", summary["n_hits_threshold"])
 
 
-def _render_dataset_tab(selected_dataset: str, base_config, exps):
-    potential_hits = set(exps[0].potential_hits)
-    n_potential_hits = len(potential_hits)
-    n_potential_hits_percent = round(
-        100 * n_potential_hits / len(base_config.simulation_data), 2
-    )
+def _render_dataset_tab(selected_dataset: str, exps):
+    pool = _load_pool(selected_dataset)
+    definition = ALSimulatorDataset[selected_dataset].definition()
+    exp = exps[0]
     st.metric(
-        "**Number of potential hits:**",
-        value=f"{n_potential_hits} ({n_potential_hits_percent} %)",
-        help="Total number of potential hits in the dataset given the campaign configuration.",
-    )
-    dataset_sequences = _load_dataset_sequences(selected_dataset)
-    df = pd.DataFrame([seq.model_dump() for seq in dataset_sequences])
-
-    # Convert label to float if possible
-    if "label" in df.columns:
-
-        def try_float_conversion(val):
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return val
-
-        df["label"] = df["label"].apply(try_float_conversion)
-
-    df = df.drop(columns=["attributes", "embedding", "mask", "set"], errors="ignore")
-
-    st.markdown(
-        "**Simulation Data**",
-        help="Dataframe of the simulation dataset (highlighted rows are potential hits).",
+        "Number of hits",
+        value=_summarize_potential_hits(exp, len(pool)),
+        help=_describe_hits(exp),
     )
 
-    def highlight_potential_hits(row):
-        if row["seq_id"] in potential_hits:
-            return ["background-color: #90EE90"] * len(row)
-        return [""] * len(row)
-
-    st.dataframe(df.style.apply(highlight_potential_hits, axis=1))
-
-    # Label distribution Chart
-    biotrainer_chart = BiocentralChart.label_distribution(dataset_sequences)
-    st.markdown(
-        "**Dataset Label Distribution**",
-        help="Distribution of all labels in the dataset.",
+    labels = [data_point.label for data_point in pool if data_point.label is not None]
+    maximize = exp.summary["optimization_mode"] == "MAXIMIZE"
+    try:
+        values = [float(label) for label in labels]
+    except ValueError:
+        values = None
+    threshold = None if values is None else _compute_hit_threshold(exp, values)
+    # Labels that are not numbers are categories named after themselves
+    label_names = definition.label_names or (
+        None if values is not None else {label: label for label in set(labels)}
     )
-    chart = biotrainer_chart.chart
 
-    chart = (
-        chart.properties(width=1200, height=800)
-        .configure_axis(labelFontSize=20, titleFontSize=28)
-        .configure_axisX(labelAngle=-45, labelLimit=0, labelOverlap=False)
-        .configure_legend(labelFontSize=24, titleFontSize=24)
-        .configure_title(fontSize=24)
+    st.markdown("**Label Distribution**")
+    _draw(
+        al_plots.build_label_distribution_chart(
+            labels, threshold, maximize, label_names
+        ),
+        width="stretch",
     )
-    st.altair_chart(chart, use_container_width=True)
+    notes = []
+    if values is not None and label_names is None:
+        notes.append(
+            f"Mean {np.mean(values):.2f} · median {np.median(values):.2f} · "
+            f"SD {np.std(values, ddof=1):.2f}"
+        )
+    if threshold is not None:
+        value = (
+            ""
+            if label_names
+            else f" at {np.format_float_positional(threshold, precision=4, fractional=False, trim='-')}"
+        )
+        notes.append(f"Dashed line: hit threshold{value}. {_describe_hits(exp)}")
+    if notes:
+        st.caption("  \n".join(notes))
 
-
-def _extract_cross_dataset_data(
-    group_by: str,
-    ds_groups: dict[str, list[DashboardExperimentData]],
-    dict_constructor: Callable,
-):
-    cross_dataset_data = {}  # ds_name -> n unique hits
-    all_groupable = {}  # Model Name / Embedder Name -> Experiments
-
-    if group_by == "dataset":
-        for ds_name, ds_exps in ds_groups.items():
-            cross_dataset_data[ds_name] = dict_constructor(ds_exps)
-    else:
-        for ds_name, ds_exps in ds_groups.items():
-            for exp in ds_exps:
-                key = getattr(exp, group_by)
-                if group_by == "embedder" and exp.model == "RANDOM":
-                    continue  # Exclude random surrogate models from embedder comparison
-                if key not in all_groupable:
-                    all_groupable[key] = []
-                all_groupable[key].append(exp)
-
-        for key, exps in all_groupable.items():
-            cross_dataset_data[key] = dict_constructor(exps)
-
-    return cross_dataset_data
-
-
-def _plot_cross_dataset_data(cross_dataset_data: dict, value_name: str):
-    import altair as alt
-    import pandas as pd
-
-    # Prepare data for plotting with error bars
-    plot_data = []
-    for key, values in cross_dataset_data.items():
-        if isinstance(values, dict) and "std" in values:
-            # Extract the main metric (first key that's not 'std')
-            metric_key = next(k for k in values if k != "std")
-            mean_value = values[metric_key]
-            std_value = values["std"]
-            plot_data.append(
+    depths = _load_depths(selected_dataset)
+    if depths is not None:
+        st.markdown(
+            "**Mutational Depth**",
+            help="Substitutions of each variant from the dataset's parent sequence.",
+        )
+        _draw(
+            al_plots.build_mutation_depth_chart(
                 {
-                    "category": key,
-                    "value": mean_value,
-                    "lower": max(0, mean_value - std_value),
-                    "upper": mean_value + std_value,
-                    "std_value": std_value,
+                    "Full landscape": list(depths.values()),
+                    "Hits": [depths[hit] for hit in exp.potential_hits],
                 }
-            )
-        else:
-            plot_data.append(
-                {"category": key, "value": values, "lower": values, "upper": values}
-            )
-
-    # Create DataFrame for the chart
-    df = pd.DataFrame(plot_data)
-    df = df.sort_values("value", ascending=False).reset_index(drop=True)
-    category_sort = df["category"].tolist()
-
-    # Create bar chart with error bars
-    bars = (
-        alt.Chart(df)
-        .mark_bar(
-            size=100,
-            filled=True,
-        )
-        .encode(
-            x=alt.X(
-                "category:N",
-                title=None,
-                axis=alt.Axis(labelAngle=-45),
-                sort=category_sort,
             ),
-            y=alt.Y("value:Q", title=value_name),
-            color=alt.Color(
-                "category:N", scale=alt.Scale(scheme="tableau10"), legend=None
-            ),
-            tooltip=[
-                alt.Tooltip("category:N", title="Category"),
-                alt.Tooltip("value:Q", title=value_name, format=".2f"),
-                alt.Tooltip("std_value:Q", title="Std Dev", format=".2f"),
-            ],
+            width="stretch",
         )
-    )
-
-    # Create error bars
-    error_bars = (
-        alt.Chart(df)
-        .mark_errorbar(color="black")
-        .encode(
-            y=alt.Y("lower:Q", title=value_name),
-            y2=alt.Y2("upper:Q", title=None),
-            x=alt.X("category:N", sort=category_sort),
-        )
-    )
-
-    chart = bars + error_bars
-
-    chart = (
-        chart.properties(width=1200, height=800)
-        .configure_axis(labelFontSize=20, titleFontSize=28)
-        .configure_axisX(labelAngle=-45, labelLimit=0, labelOverlap=False)
-        .configure_legend(labelFontSize=24, titleFontSize=24)
-        .configure_title(fontSize=24)
-    )
-
-    st.altair_chart(chart, use_container_width=True)
-
-
-def _render_cross_dataset_comparison(
-    ds_groups: dict[str, list[DashboardExperimentData]],
-):
-    st.markdown("## Cross-dataset comparison")
-    mode = st.radio(
-        "Compare by",
-        ["Surrogate Model", "Embedder", "Dataset"],
-        key="CrossDatasetRadio",
-        horizontal=True,
-    )
-
-    group_by = "model" if mode == "Surrogate Model" else mode.lower()
-
-    ### AVERAGE
-    def average_dict_constructor(exps):
-        average_hits, average_hits_std = _extract_average_hits_per_campaign(exps)
-        return {"average_hits_per_campaign": average_hits, "std": average_hits_std}
-
-    cross_dataset_data_average = _extract_cross_dataset_data(
-        group_by, ds_groups, average_dict_constructor
-    )
-
-    match group_by:
-        case "model":
-            st.markdown(
-                "**Average hits found by each surrogate model across all datasets:**",
-                help="Measure of power of different surrogate models.",
-            )
-            st.markdown(
-                "*Note: Random surrogate models are excluded from the comparison.*"
-            )
-        case "embedder":
-            st.markdown(
-                "**Average hits found by each embedder model across all datasets:**",
-                help="Measure of power of different embedder models.",
-            )
-            st.markdown(
-                "*Note: Random surrogate models are excluded from the comparison.*"
-            )
-        case "dataset":
-            st.markdown(
-                "**Average hits found in each dataset across all models and embedders:**",
-                help="Measure of difficulty of the dataset for active learning simulations.",
-            )
-
-    _plot_cross_dataset_data(cross_dataset_data_average, "Average Hits")
-
-    ### UNIQUE
-    def unique_dict_constructor(exps):
-        unique_hits, n_iteration_hits_std = _extract_unique_hits(exps)
-        return {"unique_hits": len(unique_hits), "std": n_iteration_hits_std}
-
-    cross_dataset_data_unique = _extract_cross_dataset_data(
-        group_by, ds_groups, unique_dict_constructor
-    )
-
-    match group_by:
-        case "model":
-            st.markdown(
-                "**Unique hits found by each surrogate model across all datasets:**",
-                help="Measure of diversity of hits covered by different surrogate models.",
-            )
-            st.markdown(
-                "*Note: Random surrogate models are excluded from the comparison.*"
-            )
-        case "embedder":
-            st.markdown(
-                "**Unique hits found by each embedder model across all datasets:**",
-                help="Measure of diversity of hits covered by different embedder models.",
-            )
-            st.markdown(
-                "*Note: Random surrogate models are excluded from the comparison.*"
-            )
-        case "dataset":
-            st.markdown(
-                "**Unique hits found in each dataset across all models and embedders:**",
-                help="Measure of difficulty of the dataset for active learning simulations.",
-            )
-
-    _plot_cross_dataset_data(cross_dataset_data_unique, "Unique Hits")
 
 
 def main():
     # ---------------------------------------------------------------------------
     # Sidebar
     # ---------------------------------------------------------------------------
-    st.sidebar.header("Simulation results")
+    st.sidebar.header("Simulation Results")
 
     # ---------------------------------------------------------------------------
     # Main area
@@ -730,140 +1170,82 @@ def main():
         st.sidebar.success("Loaded all results.")
     else:
         st.error(
-            f"Compressed data files not found at `{RESULTS_DIR}`. Please run `compress_reports.py` first."
+            f"Compressed data files not found at `{RESULTS_DIR}`. "
+            "Run `uv run python -m biocentral_al_sim.compress_reports` first."
         )
         st.stop()
 
+    st.sidebar.subheader("Select Run")
     selected_run = st.sidebar.selectbox(
-        "Select Run", sorted(all_compressed_data.keys())
+        "Select Run", sorted(all_compressed_data.keys()), label_visibility="collapsed"
     )
 
     compressed_data = all_compressed_data[selected_run]
-
-    # Group by dataset
-    ds_groups: dict[str, list[DashboardExperimentData]] = {}
+    by_dataset: dict[str, list[DashboardExperimentData]] = {}
     for exp in compressed_data.experiments:
-        dataset_name = exp.dataset_id.name
-        if dataset_name not in ds_groups:
-            ds_groups[dataset_name] = []
-        ds_groups[dataset_name].append(exp)
+        by_dataset.setdefault(exp.dataset_id.name, []).append(exp)
 
-    selected_dataset = st.sidebar.selectbox("Select Dataset", sorted(ds_groups.keys()))
-    al_simulator = _load_simulator(selected_dataset)
-    base_config = al_simulator.base_config
-    simulation_config = al_simulator.get_simulation_config()
-    exps = ds_groups[selected_dataset]
+    st.sidebar.subheader("Select Dataset")
+    selected_dataset = st.sidebar.selectbox(
+        "Select Dataset", sorted(by_dataset), label_visibility="collapsed"
+    )
+    exps = by_dataset[selected_dataset]
 
-    # Display configuration summary in sidebar
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Simulation Setup")
-
-    with st.sidebar.expander("Base Configuration", expanded=True):
-        st.markdown(
-            f"**Optimization Mode:** {base_config.optimization_mode.value}",
-            help=f"The goal of this simulation: {base_config.explain_optimization_mode()}",
-        )
-
-        if base_config.target_lb is not None:
-            st.markdown(f"**Target Lower Bound:** {base_config.target_lb}")
-        if base_config.target_ub is not None:
-            st.markdown(f"**Target Upper Bound:** {base_config.target_ub}")
-        if base_config.target_value is not None:
-            st.markdown(f"**Target Value:** {base_config.target_value}")
-        if base_config.discrete_targets:
-            st.markdown(
-                f"**Discrete Targets:** {', '.join(base_config.discrete_targets)}"
-            )
-
-        n_sim_data = len(base_config.simulation_data)
-        st.markdown(
-            f"**Total Sequences:** {n_sim_data}",
-            help="Total number of sequences in the simulation dataset.",
-        )
-        potential_hits = exps[0].potential_hits
-        n_potential_hits = len(potential_hits)
-        n_potential_hits_percent = round(100 * n_potential_hits / n_sim_data, 2)
-        st.markdown(
-            f"**Number of potential hits:** {n_potential_hits} ({n_potential_hits_percent} %)",
-            help="Total number of potential hits in the dataset given the campaign configuration.",
-        )
-
-    with st.sidebar.expander("Simulation Configuration", expanded=True):
-        if simulation_config.n_start is not None:
-            st.markdown(
-                f"**Initial Training Sequences:** {simulation_config.n_start}",
-                help="These sequences are chosen at random from the total sequences (using the simulation seed).",
-            )
-        if simulation_config.start_ids is not None:
-            st.markdown(
-                f"**Start IDs Count:** {len(simulation_config.start_ids)}",
-                help="These sequences and their labels are used to start the simulation.",
-            )
-
-        st.markdown(
-            f"**Suggestions per Iteration:** {simulation_config.n_suggestions_per_iteration}",
-            help="Number of suggestions selected per iteration of each campaign.",
-        )
-
-        stop_cfg = simulation_config.stopping_config
-        st.markdown(
-            "**Stopping Criteria:**",
-            help="Determines when the simulated campaign should stop.",
-        )
-        if hasattr(stop_cfg, "n_hits") and stop_cfg.n_hits is not None:
-            st.markdown(
-                f"  - Number of Hits: {stop_cfg.n_hits}",
-                help="Stops the campaign when this number of targets (hits) is found.",
-            )
-        if (
-            hasattr(stop_cfg, "n_max_iterations")
-            and stop_cfg.n_max_iterations is not None
-        ):
-            st.markdown(
-                f"  - Max Iterations: {stop_cfg.n_max_iterations}",
-                help="Always stops the campaign after this number of iterations.",
-            )
-        if (
-            hasattr(stop_cfg, "max_consecutive_failures")
-            and stop_cfg.max_consecutive_failures is not None
-        ):
-            st.markdown(
-                f"  - Max Consecutive Failures: {stop_cfg.max_consecutive_failures}",
-                help="Stops the campaign after this number of consecutive failures (no hits found in an iteration).",
-            )
-
-    subset = ds_groups[selected_dataset]
+    st.sidebar.subheader("Campaign Setup")
+    same_throughput = _filter_throughput(exps)
+    subset = _filter_experiments(same_throughput)
+    st.sidebar.subheader("Display")
+    error_metric = st.sidebar.radio("Error metric", ["RMSE", "MAE"], horizontal=True)
 
     main_tabs = st.tabs(
-        ["Individual Simulation Result", "Comparison", "Dataset Statistics"]
+        ["Dataset statistics", "Campaigns", "Ablations", "Single campaign"]
     )
 
-    with main_tabs[0]:  # Individual simulation result
-        exp_names = {e.name: e for e in subset}
-        selected_name = st.selectbox("Select Experiment", sorted(exp_names.keys()))
-        exp = exp_names[selected_name]
+    with main_tabs[0]:
+        _render_dataset_tab(selected_dataset, exps)
+
+    with main_tabs[1]:
+        _render_campaigns_tab(subset, error_metric)
+
+    with main_tabs[2]:
+        _render_ablations_tab(same_throughput, error_metric)
+
+    with main_tabs[3]:
+        encoders = list(
+            dict.fromkeys(
+                [e for e in ENCODER_LABELS if any(x.embedder == e for x in subset)]
+                + sorted(x.embedder for x in subset)
+            )
+        )
+        col_encoder, col_model = st.columns(2)
+        encoder = col_encoder.selectbox(
+            "Encoder", encoders, format_func=_get_encoder_label
+        )
+        model = col_model.selectbox(
+            "Surrogate model",
+            sorted({x.model for x in subset if x.embedder == encoder}),
+        )
+        candidates = [x for x in subset if x.embedder == encoder and x.model == model]
+        # Several experiments only differ in what the filters leave open, e.g. the split
+        if len(candidates) > 1:
+            chosen = st.selectbox("Results file", [x.name for x in candidates])
+            candidates = [x for x in candidates if x.name == chosen]
+        exp = candidates[0]
 
         _render_header(exp)
 
-        sub_tabs = st.tabs(["Aggregate", "Per-Simulation Drill-down"])
-        with sub_tabs[0]:  # Simulations Aggregate
-            _render_simulations_aggregate(exp)
-        with sub_tabs[1]:  # Per-simulation drill-down
-            sim_labels = {s.label: s for s in exp.single_sims}
-            selected_label = st.selectbox("Simulation run", sorted(sim_labels.keys()))
-            sim_data = sim_labels[selected_label]
-            _render_single_simulation(exp, sim_data, exp.summary)
-
-    with main_tabs[1]:  # Inner simulation comparison (model/embedder)
-        _render_inner_simulation_comparison(subset)
-
-    with main_tabs[2]:  # Dataset statistics
-        _render_dataset_tab(selected_dataset, base_config, exps)
-
-    st.divider()
-
-    # Render cross-dataset comparison
-    _render_cross_dataset_comparison(ds_groups)
+        # Engineering landscapes are too large to project
+        projection_result = (
+            _load_projection(dataset_id=exp.dataset_id, embedder_name=exp.embedder)
+            if exp.dataset_id in ALSimulatorDataset.screening()
+            else None
+        )
+        sub_tabs = st.tabs(["All replicates", "Single replicate"])
+        with sub_tabs[0]:
+            _render_simulations_aggregate(exp, error_metric, projection_result)
+        with sub_tabs[1]:
+            for sim_data in sorted(exp.single_sims, key=lambda s: s.seed):
+                _render_single_simulation(exp, sim_data, projection_result)
 
 
 if __name__ == "__main__":

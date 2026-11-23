@@ -2,11 +2,22 @@ from enum import Enum, auto
 from pathlib import Path
 
 from biocentral_api import ActiveLearningOptimizationMode
+from biotrainer_core.data_classes import SequenceData
+from biotrainer_core.input_files import read_FASTA
 from pydantic import BaseModel, Field
+
+from .splits import (
+    ALSimulatorSplitDefinition,
+    AnySelector,
+    MutatedSites,
+    MutationCount,
+    SiteMatch,
+)
 
 
 class ALSimulatorDatasetDefinition(BaseModel):
-    """Everything that defines a simulation dataset: its data and its optimization target"""
+    """Everything that defines a simulation dataset: its data, the pool its campaigns draw from
+    and its optimization target"""
 
     fasta_path: str = Field(description="Path to the labelled simulation FASTA")
     optimization_mode: ActiveLearningOptimizationMode = Field(
@@ -29,6 +40,30 @@ class ALSimulatorDatasetDefinition(BaseModel):
         description="Single-sequence FASTA with the wild type this dataset mutates. Only mutational "
         "landscapes have one; mutation-aware splits (see splits) require it.",
     )
+    pool_selector: AnySelector | None = Field(
+        default=None,
+        description="Restricts the sequences campaigns draw from, None for every sequence. "
+        "Mutation-aware selectors need reference_fasta_path.",
+    )
+    label_names: dict[str, str] | None = Field(
+        default=None,
+        description="Display name of each ordinal label",
+    )
+
+    def explain_optimization_mode(self) -> str:
+        match self.optimization_mode:
+            case ActiveLearningOptimizationMode.MAXIMIZE:
+                return "Maximize the target value."
+            case ActiveLearningOptimizationMode.MINIMIZE:
+                return "Minimize the target value."
+            case ActiveLearningOptimizationMode.DISCRETE:
+                return "Classify the sequences into discrete classes."
+            case ActiveLearningOptimizationMode.INTERVAL:
+                return "Find target sequences with labels in the specified interval."
+            case ActiveLearningOptimizationMode.VALUE:
+                return "Find targets with the specified value."
+            case _:
+                return "Unknown optimization mode."
 
 
 class ALSimulatorDataset(Enum):
@@ -96,6 +131,21 @@ class ALSimulatorDataset(Enum):
         if path is not None:
             return path
         return self.definition().fasta_path
+
+    def pool(self) -> list[SequenceData]:
+        """Sequences this dataset's campaigns draw from: its FASTA, restricted by pool_selector."""
+        pool = read_FASTA(self.to_path())
+        selector = self.definition().pool_selector
+        if selector is None:
+            return pool
+        definition = ALSimulatorSplitDefinition(
+            description=f"{self.name} restricted to {selector.describe()}.",
+            pool_selector=selector,
+        )
+        resolved, _ = definition.resolve(
+            pool, explicit_reference=self.reference_sequence()
+        )
+        return resolved
 
 
 _DATASET_DEFINITIONS: dict[str, ALSimulatorDatasetDefinition] = {
@@ -165,12 +215,27 @@ _DATASET_DEFINITIONS.update(
             fasta_path="datasets/engineering/flip2_TrpB_max2000.fasta",
             reference_fasta_path=f"{_FLIP2_RAW}/trpb/TrpB_wt.fasta",
             optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+            # A union of 64 saturation libraries. Across the union of their positions a generated
+            # double lands on a label 2.9% of the time; inside the dominant 4-site library, 99.7%.
+            # TODO allow all sites, 2.9% is fine
+            pool_selector=MutatedSites(
+                positions=[183, 184, 227, 228], match=SiteMatch.ONLY
+            ),
         ),
-        # Ordinal ladder: 0 non-functional, 1 activity > 0, 2 activity > WT, 3 activity > A73R
+        # Ordinal ladder of nuclease activity
         ALSimulatorDataset.FLIP2_NUCB.name: ALSimulatorDatasetDefinition(
             fasta_path="datasets/engineering/flip2_NucB_max2000.fasta",
             reference_fasta_path=f"{_FLIP2_RAW}/nucb/NucB_wt.fasta",
             optimization_mode=ActiveLearningOptimizationMode.MAXIMIZE,
+            label_names={
+                "0": "non-functional",
+                "1": "activity > 0",
+                "2": "activity > WT",
+                "3": "activity > A73R",
+            },
+            # No library structure at all -- 20_896 maximal position sets, the top 20 covering 1%
+            # of the pool. Only its single substitutions are dense: 2_088 of 2_112 are labelled.
+            pool_selector=MutationCount(max_mutations=1),
         ),
     }
 )

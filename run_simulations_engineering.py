@@ -27,8 +27,6 @@ from time import monotonic
 from urllib.request import urlopen
 
 from biocentral_api import ActiveLearningModelType, CommonEmbedder
-from biotrainer_core.data_classes import SequenceData
-from biotrainer_core.input_files import read_FASTA
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -61,11 +59,9 @@ from biocentral_al_sim.splits import (
     AllOf,
     ALSimulatorSplitDefinition,
     AnyOf,
-    MutatedSites,
     MutationCount,
     RandomSample,
     SelectorSplit,
-    SiteMatch,
 )
 
 DATASET_CHOICES = {
@@ -78,17 +74,6 @@ DATASET_CHOICES = {
     "NUCB": ALSimulatorDataset.FLIP2_NUCB,  #   2_088 variants once restricted
 }
 
-POOL_RESTRICTIONS = {
-    # A union of 64 saturation libraries. Across the union of their positions a generated
-    # double lands on a label 2.9% of the time; inside the dominant 4-site library, 99.7%.
-    # TODO allow all sites, 2.9% is fine
-    ALSimulatorDataset.FLIP2_TRPB: MutatedSites(
-        positions=[183, 184, 227, 228], match=SiteMatch.ONLY
-    ),
-    # No library structure at all -- 20_896 maximal position sets, the top 20 covering 1%
-    # of the pool. Only its single substitutions are dense: 2_088 of 2_112 are labelled.
-    ALSimulatorDataset.FLIP2_NUCB: MutationCount(max_mutations=1),
-}
 EMBEDDERS = [
     CommonEmbedder.ONE_HOT_ENCODING.value,
     CommonEmbedder.LENGTH_EMBEDDER.value,
@@ -128,23 +113,6 @@ def engineering_settings(
         generate_candidates=generate_candidates,
         n_substitutions=n_substitutions,
     )
-
-
-def restricted_pool(
-    dataset_id: ALSimulatorDataset, pool: list[SequenceData]
-) -> list[SequenceData]:
-    """Dataset's pool restricted to POOL_RESTRICTIONS"""
-    selector = POOL_RESTRICTIONS.get(dataset_id)
-    if selector is None:
-        return pool
-    definition = ALSimulatorSplitDefinition(
-        description=f"{dataset_id.name} restricted to {selector.describe()}.",
-        pool_selector=selector,
-    )
-    resolved, _ = definition.resolve(
-        pool, explicit_reference=dataset_id.reference_sequence()
-    )
-    return resolved
 
 
 def starting_set(
@@ -224,7 +192,7 @@ def run_experiment(
     if len(done) >= settings.n_replicates:
         return ActiveLearningMultipleSimulationResult(done[: settings.n_replicates])
 
-    pool = restricted_pool(dataset_id, read_FASTA(dataset_id.to_path()))
+    pool = dataset_id.pool()
     definition = dataset_id.definition()
     results = []
     for replicate in range(len(done), settings.n_replicates):
