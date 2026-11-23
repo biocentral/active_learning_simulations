@@ -741,31 +741,14 @@ def _render_campaigns_tab(
 
 def _render_header(exp: DashboardExperimentData) -> None:
     summary = exp.summary
-    st.markdown(f"### `{exp.name}`")
-    cols_row1 = st.columns(3)
-    cols_row1[0].metric("Embedder", _get_encoder_label(exp.embedder))
-    cols_row1[1].metric("Model", exp.model)
-    cols_row1[2].metric("Mode", str(summary["optimization_mode"]))
-
-    cols_row2 = st.columns(3)
-    cols_row2[0].metric("Sims", summary["n_simulations"])
+    st.caption(f"`{exp.name}` · {summary['n_simulations']} replicates")
+    st.caption(_describe_stopping_criteria(exp.setup))
     if summary["n_hits_threshold"] is not None:
-        cols_row2[1].metric(
+        cols = st.columns(2)
+        cols[0].metric(
             "Successful", f"{summary['n_successful']}/{summary['n_simulations']}"
         )
-        cols_row2[2].metric("Target threshold", summary["n_hits_threshold"])
-
-    setup = exp.setup
-    cols_setup = st.columns(4)
-    cols_setup[0].metric("Starting set", setup.n_start)
-    cols_setup[1].metric("Suggestions per round", setup.n_suggestions_per_iteration)
-    cols_setup[2].metric("Candidates", _describe_candidate_source(setup))
-    cols_setup[3].metric(
-        "Delta embeddings", "On" if setup.use_delta_embeddings else "Off"
-    )
-    st.caption(_describe_stopping_criteria(setup))
-    if summary.get("discrete_targets"):
-        st.caption(f"Discrete targets: {', '.join(summary['discrete_targets'])}")
+        cols[1].metric("Target threshold", summary["n_hits_threshold"])
 
 
 def _render_dataset_tab(selected_dataset: str, exps):

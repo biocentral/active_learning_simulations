@@ -120,47 +120,27 @@ def build_metric_evolution_chart(
     )
 
 
-def build_n_hits_chart(n_iteration_hits: list[int]) -> alt.LayerChart:
-    successes = n_iteration_hits or []
-    n_iterations = len(successes)
-    iterations = list(range(1, n_iterations + 1))
-    cumulative = np.cumsum(successes).tolist() if successes else []
-
+def build_n_hits_chart(n_iteration_hits: list[int]) -> alt.Chart:
+    """Cumulative hits per round."""
+    n_rounds = len(n_iteration_hits or [])
     df = pd.DataFrame(
         {
-            "iteration": iterations,
-            "per_iteration": successes,
-            "cumulative": cumulative,
+            "round": range(1, n_rounds + 1),
+            "cumulative": np.cumsum(n_iteration_hits or []).astype(int),
         }
     )
-
-    bars = (
-        alt.Chart(df)
-        .mark_bar(opacity=0.35, color="#7fc97f")
-        .encode(
-            x=alt.X("iteration:Q", title="Iteration"),
-            y=alt.Y("per_iteration:Q", title="Target Successes"),
-            tooltip=[
-                alt.Tooltip("iteration:Q", title="Iteration"),
-                alt.Tooltip("per_iteration:Q", title="Per Iteration"),
-                alt.Tooltip("cumulative:Q", title="Cumulative"),
-            ],
-        )
-    )
-    line = (
+    return (
         alt.Chart(df)
         .mark_line(point=True, color="#1b7837", strokeWidth=2)
         .encode(
-            x="iteration:Q",
-            y=alt.Y("cumulative:Q", title="Target Successes"),
+            x=round_axis(n_rounds),
+            y=alt.Y("cumulative:Q", title="Hits"),
             tooltip=[
-                alt.Tooltip("iteration:Q", title="Iteration"),
-                alt.Tooltip("cumulative:Q", title="Cumulative"),
+                alt.Tooltip("round:Q", title="Round"),
+                alt.Tooltip("cumulative:Q", title="Hits"),
             ],
         )
-    )
-    return alt.layer(bars, line).properties(
-        title="Target Successes Over Iterations", height=320
+        .properties(title="Hits", height=320)
     )
 
 
@@ -168,18 +148,20 @@ def build_consecutive_failures_chart(
     iteration_consecutive_failures: list[int],
     stop_reasons: list[str] | None,
 ) -> alt.LayerChart:
+    """Rounds in a row without a hit, at the end of each round."""
     failures = iteration_consecutive_failures or []
-    iterations = list(range(len(failures) + 1))
-    values = [0] + list(failures)
-    df = pd.DataFrame({"iteration": iterations, "failures": values})
+    df = pd.DataFrame({"round": range(1, len(failures) + 1), "failures": failures})
 
     step = (
         alt.Chart(df)
         .mark_line(interpolate="step-after", color="#d7301f", strokeWidth=2, point=True)
         .encode(
-            x=alt.X("iteration:Q", title="Iteration"),
-            y=alt.Y("failures:Q", title="Consecutive Failures"),
-            tooltip=["iteration:Q", "failures:Q"],
+            x=round_axis(len(failures)),
+            y=alt.Y("failures:Q", title="Consecutive failures"),
+            tooltip=[
+                alt.Tooltip("round:Q", title="Round"),
+                alt.Tooltip("failures:Q", title="Consecutive failures"),
+            ],
         )
     )
     layers: list[alt.Chart] = [step]
@@ -196,9 +178,7 @@ def build_consecutive_failures_chart(
         )
         layers.append(rule)
 
-    return alt.layer(*layers).properties(
-        title="Consecutive Failures Tracking", height=320
-    )
+    return alt.layer(*layers).properties(title="Consecutive Failures", height=320)
 
 
 def build_suggested_labels_chart(
