@@ -107,11 +107,13 @@ def engineering_settings(
     generate_candidates: bool,
     n_substitutions: int,
 ) -> EngineeringCampaignSettings:
+    # Don't hash n_substitutions into pool campaign filenames, where it doesn't matter
+    generated = {"n_substitutions": n_substitutions} if generate_candidates else {}
     return EngineeringCampaignSettings(
         **settings.model_dump(),
         use_delta_embeddings=use_delta_embeddings,
         generate_candidates=generate_candidates,
-        n_substitutions=n_substitutions,
+        **generated,
     )
 
 
