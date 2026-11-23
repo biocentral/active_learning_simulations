@@ -15,6 +15,7 @@ Result JSON filenames are named by throughput tag + CampaignSettings fingerprint
 """
 
 import json
+import logging
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,6 +28,7 @@ from time import monotonic
 from urllib.request import urlopen
 
 from biocentral_api import ActiveLearningModelType, CommonEmbedder
+from rich.logging import RichHandler
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -63,6 +65,8 @@ from biocentral_al_sim.splits import (
     RandomSample,
     SelectorSplit,
 )
+
+logger = logging.getLogger("run_simulations_engineering")
 
 DATASET_CHOICES = {
     "SACAS9": ALSimulatorDataset.COMBINGYM_SACAS9,  #   1_296 variants, MAXIMIZE
@@ -107,11 +111,13 @@ def engineering_settings(
     generate_candidates: bool,
     n_substitutions: int,
 ) -> EngineeringCampaignSettings:
+    # Don't hash n_substitutions into pool campaign filenames, where it doesn't matter
+    generated = {"n_substitutions": n_substitutions} if generate_candidates else {}
     return EngineeringCampaignSettings(
         **settings.model_dump(),
         use_delta_embeddings=use_delta_embeddings,
         generate_candidates=generate_candidates,
-        n_substitutions=n_substitutions,
+        **generated,
     )
 
 
@@ -212,10 +218,12 @@ def run_experiment(
         if on_replicate is not None:
             on_replicate(replicate)
         if show_progress:
-            print(
-                f"  replicate {replicate + 1}/{settings.n_replicates} "
-                f"(campaign seed {seed}, draw seed {draw_seed})",
-                flush=True,
+            logger.info(
+                "Replicate %d/%d (campaign seed %d, draw seed %d)",
+                replicate + 1,
+                settings.n_replicates,
+                seed,
+                draw_seed,
             )
         result = ActiveLearningEngineeringSimulator(base_config).run_replicate(
             model_type=model_type,
@@ -358,7 +366,7 @@ def main(
         "active_learning": git_commit(Path(__file__).parent),
         "server": server_commit,
     }
-    print(f"Commits: {commits}")
+    logger.info("Commits: %s", commits)
 
     with _progress() as progress:
         regimes = ", ".join(dict.fromkeys(settings.short_name for settings in settings))
@@ -415,20 +423,25 @@ def main(
                     future.result()
                 except Exception as error:  # noqa: BLE001
                     failures.append((name, repr(error)))
-                    progress.console.print(f"[red]FAILED[/] {name}: {error!r}")
+                    logger.error("FAILED %s: %r", name, error)
                 progress.advance(overall)
 
     done = total - len(failures)
-    print("\n" + profile_summary())
-    print(f"\nGrid finished: {done}/{total} succeeded.")
+    logger.info(profile_summary())
+    logger.info("Grid finished: %d/%d succeeded", done, total)
     for name, error in failures:
-        print(f"  FAILED {name}: {error}")
+        logger.error("FAILED %s: %s", name, error)
     return 1 if failures else 0
 
 
 if __name__ == "__main__":
     import argparse
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        handlers=[RichHandler(show_path=False)],
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--throughput", nargs="+", choices=[*THROUGHPUTS], default=[*THROUGHPUTS]
