@@ -49,15 +49,20 @@ class CampaignSettings(BaseModel):
         return self.n_iterations * self.n_suggestions_per_iteration
 
     def fingerprint(self) -> str:
-        digest = hashlib.sha256(self.model_dump_json().encode("utf-8"))
-        return digest.hexdigest()[:8]
+        """Hash fields without `n_replicates`
+        
+        Replicate i always runs on seed `first_seed + i`, so runs
+        differing only in their replicate count share the same result file.
+        """
+        payload = self.model_dump_json(exclude={"n_replicates"})
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
 
 
 class EngineeringCampaignSettings(CampaignSettings):
     """Campaign settings for a simulated engineering campaign.
 
-    A subclass rather than extra fields on CampaignSettings: the fingerprint hashes every
-    field, so widening the base would rename every existing screening result file.
+    A subclass rather than extra fields on CampaignSettings: the fingerprint hashes the
+    fields, so widening the base would rename every existing screening result file.
     """
 
     n_candidates_per_iteration: int = Field(
